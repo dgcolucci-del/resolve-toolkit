@@ -1,0 +1,38 @@
+#!/bin/bash
+# Post-installazione del Resolve Toolkit: ambiente Python per l'utente e collegamento a Claude Desktop.
+set -euo pipefail
+
+SORGENTE="/Library/Application Support/ResolveToolkit/src"
+UTENTE="$(stat -f%Su /dev/console)"
+CASA="$(dscl . -read "/Users/$UTENTE" NFSHomeDirectory | awk '{print $2}')"
+DEST="$CASA/Library/Application Support/ResolveToolkit"
+LOG="$CASA/Library/Logs/ResolveToolkit/installazione.log"
+
+come_utente() { sudo -u "$UTENTE" -H "$@"; }
+come_utente mkdir -p "$DEST" "$(dirname "$LOG")"
+exec >>"$LOG" 2>&1
+echo "=== installazione $(date) per $UTENTE"
+
+# Python 3.10-3.14 (lo stesso tipo che usa già l'MCP di Resolve)
+PY=""
+for c in /usr/local/bin/python3.12 /usr/local/bin/python3.11 /usr/local/bin/python3.13 /usr/local/bin/python3.14 \
+         /opt/homebrew/bin/python3.12 /opt/homebrew/bin/python3 /usr/local/bin/python3; do
+  if [ -x "$c" ]; then PY="$c"; break; fi
+done
+if [ -z "$PY" ]; then
+  echo "ERRORE: nessun Python 3.10+ trovato"; exit 1
+fi
+echo "Python: $PY ($("$PY" --version))"
+
+come_utente "$PY" -m venv "$DEST/venv"
+come_utente "$DEST/venv/bin/pip" install --upgrade pip
+come_utente "$DEST/venv/bin/pip" install --upgrade "$SORGENTE"
+
+# Collegamento a Claude Desktop, con copia di sicurezza della configurazione
+CONF="$CASA/Library/Application Support/Claude/claude_desktop_config.json"
+come_utente mkdir -p "$(dirname "$CONF")"
+if [ -f "$CONF" ]; then
+  come_utente cp "$CONF" "$CONF.backup-resolve-toolkit-$(date +%Y%m%d-%H%M%S)"
+fi
+come_utente "$DEST/venv/bin/python" "$SORGENTE/installer/collega_claude.py" "$CONF" "$DEST/venv/bin/resolve-toolkit"
+echo "OK: installazione completata. Riavvia Claude Desktop."

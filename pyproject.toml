@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "resolve-toolkit"
+version = "0.2.0"
+description = "Comandi DaVinci Resolve con regole e verifiche integrate (Diego Colucci)"
+requires-python = ">=3.10"
+dependencies = [
+  "mcp>=1.2",
+  "numpy>=1.24",
+  "pillow>=10",
+  "librosa>=0.10",
+  "soundfile>=0.12",
+  "opencv-python-headless>=4.8",
+  "pyobjc-framework-Vision>=10; sys_platform == 'darwin'",
+  "pyobjc-framework-Quartz>=10; sys_platform == 'darwin'",
+]
+
+[project.scripts]
+resolve-toolkit = "resolve_toolkit.server:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]

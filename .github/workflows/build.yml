@@ -1,0 +1,49 @@
+name: Test e installer Mac
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - run: pip install "mcp>=1.2" numpy pillow librosa soundfile opencv-python-headless pytest
+      - run: python -m pytest -q tests
+
+  pkg:
+    needs: test
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepara il contenuto del pacchetto
+        run: |
+          mkdir -p payload/src
+          cp -R src pyproject.toml README.md installer payload/src/
+          chmod +x installer/scripts/postinstall
+      - name: Compila il .pkg
+        run: |
+          VERSIONE=$(grep '^version' pyproject.toml | cut -d'"' -f2)
+          pkgbuild --root payload \
+            --scripts installer/scripts \
+            --identifier it.colucci.resolvetoolkit \
+            --version "$VERSIONE" \
+            --install-location "/Library/Application Support/ResolveToolkit" \
+            "ResolveToolkit-$VERSIONE.pkg"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ResolveToolkit-pkg
+          path: ResolveToolkit-*.pkg
+      - name: Release (solo sui tag v*)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ResolveToolkit-*.pkg
