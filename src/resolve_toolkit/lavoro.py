@@ -95,10 +95,11 @@ def sposta_nel_cestino(file: list[str], conferma_diego: str) -> dict:
 # ---------------------------------------------------------------- archivio asset e salvataggio
 
 def importa_asset(percorsi: list[str], cartella_media_pool: str = "") -> dict:
-    archivio = regole()["archivio_asset"]
-    fuori = [p for p in percorsi if not os.path.abspath(p).startswith(archivio)]
+    ammesse = [regole()["archivio_asset"], regole().get("cartella_progetti", "")]
+    ammesse = [a.rstrip("/") + "/" for a in ammesse if a]
+    fuori = [p for p in percorsi if not any(os.path.abspath(p).startswith(a) for a in ammesse)]
     if fuori:
-        raise ErroreToolkit(f"Gli asset vanno presi e archiviati in {archivio}. Fuori archivio: {fuori}")
+        raise ErroreToolkit(f"Si importa solo da {ammesse} (archivio asset o cartelle dei progetti). Fuori: {fuori}")
     mancanti = [p for p in percorsi if not os.path.exists(p)]
     if mancanti:
         raise ErroreToolkit(f"File non trovati (Diego li ha già scaricati?): {mancanti}")

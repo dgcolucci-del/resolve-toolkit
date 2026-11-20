@@ -99,12 +99,22 @@ def fotogrammi_ai_tagli(cartella_uscita: str, traccia: int = 1, nome_timeline: s
 @comando
 def render_sicuro(cartella: str, nome_file: str, conferma_diego: str, preset: str = "H.264 Master",
                   bitrate: int = 100000, mark_in: int = -1, mark_out: int = -1,
-                  solo_audio: bool = False, nome_timeline: str = "") -> dict:
+                  solo_audio: bool = False, formato: str = "", codec: str = "",
+                  larghezza: int = 0, altezza: int = 0, nome_timeline: str = "") -> dict:
     """Render con la sequenza verificata. SOLO su richiesta esplicita: conferma_diego = sue parole.
-    mark_in/mark_out in frame relativi (-1 = tutta la timeline)."""
+    mark_in/mark_out in frame relativi (-1 = tutta la timeline). 4K verticale MP4: formato="mp4",
+    codec="H264", larghezza=2160, altezza=3840, bitrate=160000. Export Video/Audio sempre impostati.
+    Se dura più di ~55 s risponde "in_corso" con job_id: poi stato_render."""
     return operazioni.render_sicuro(cartella, nome_file, conferma_diego, preset, bitrate,
                                     None if mark_in < 0 else mark_in, None if mark_out < 0 else mark_out,
-                                    solo_audio, nome_timeline=nome_timeline or None)
+                                    solo_audio, formato, codec, larghezza, altezza,
+                                    nome_timeline=nome_timeline or None)
+
+
+@comando
+def stato_render(job_id: str) -> dict:
+    """Stato di un render avviato dal toolkit ("in_corso" con percentuale, oppure il file finito)."""
+    return operazioni.stato_render(job_id)
 
 
 @comando
@@ -247,6 +257,13 @@ def clip_orizzontali(nome_timeline: str = "") -> dict:
 
 
 @comando
+def sostituisci_clip(impronta: str, id_clip: str, nome_clip_nuova: str, cartella: str = "",
+                     nome_timeline: str = "") -> dict:
+    """Sostituisce una clip (es. overlay sottotitoli nuova versione) tenendo traccia e posizione."""
+    return operazioni.sostituisci_clip(impronta, id_clip, nome_clip_nuova, cartella or None, nome_timeline or None)
+
+
+@comando
 def smart_reframe(impronta: str, indici: list[int], traccia: int = 1, nome_timeline: str = "") -> dict:
     """Smart Reframe sulle clip indicate (poi mappa_zone per la testa)."""
     return effetti.smart_reframe(impronta, indici, traccia, nome_timeline or None)
@@ -287,7 +304,8 @@ def timeline_alternative(riprese: list[dict], nome_timeline: str) -> dict:
 
 @comando
 def trascrivi(file_audio: str, lingua: str = "it") -> dict:
-    """whisper.cpp large-v3 sul Mac: parole con tempi (da correggere sull'audio e far rileggere a Diego)."""
+    """whisper.cpp large-v3 sul Mac IN BACKGROUND: la prima chiamata avvia ("in_corso"), richiamala con lo
+    stesso file finché dà il testo. Accetta anche mov/mp4. Da far rileggere a Diego."""
     return montaggio.trascrivi(file_audio, lingua)
 
 

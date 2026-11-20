@@ -21,8 +21,15 @@ def esporta_frame(t, frame_assoluto: int, path: str) -> str:
     if not t.SetCurrentTimecode(tc):
         raise ErroreToolkit(f"Non riesco a portare la testina a {tc}.")
     os.makedirs(os.path.dirname(path), exist_ok=True)
+    if progetto().ExportCurrentFrameAsStill(path):
+        return path
+    # 20 nov 2026: fallisce col Mac occupato o fuori da Edit; si riprova una volta da Edit dopo una pausa
+    import time
+    resolve().OpenPage("edit")
+    time.sleep(2)
+    t.SetCurrentTimecode(tc)
     if not progetto().ExportCurrentFrameAsStill(path):
-        raise ErroreToolkit(f"Export del frame {tc} fallito.")
+        raise ErroreToolkit(f"Export del frame {tc} fallito anche al secondo tentativo (da Edit).")
     return path
 
 

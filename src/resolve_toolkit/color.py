@@ -3,6 +3,8 @@
 Regole (colorist-davinci-master, 1 / 12 / 17 / 19 nov 2026):
 - la color si fa clip per clip nella pagina Color guardando gli scope sul PHL: il toolkit NON corregge;
 - niente copie di grade via script/DRX, niente LUT/CDL come scorciatoia (i comandi non esistono);
+- progetti DaVinci YRGB non gestiti (ingresso Rec.709, timeline DWG/Intermediate): l'esposizione si fa con
+  OFFSET in un nodo "Use timeline", NON col Gain in Linear, che qui satura (pelle 0,64 → 0,95, 20 nov 2026);
 - prima di correggere: sorgente senza nodi + catena adatta a quella clip;
 - "color completa" solo se ogni clip ha il controllo scope registrato dopo l'ultima modifica.
 """
@@ -87,26 +89,110 @@ def stato_color(nome_timeline: str | None = None) -> dict:
     for c in clip:
         n = c["catena"].get("numero_nodi")
         conteggi[n] = conteggi.get(n, 0) + 1
+    scienza = str(progetto().GetSetting("colorScienceMode") or "")
+    if scienza == "davinciYRGB":
+        avvisi.append("Progetto YRGB non gestito: esposizione con OFFSET in un nodo 'Use timeline'. "
+                      "Il Gain in un nodo Linear qui satura (pelle 0,64 → 0,95, REEL 003, 20 nov 2026).")
     return {"esito": "ok" if not avvisi else "da_verificare", "clip": clip, "avvisi": avvisi,
-            "nodi_per_clip": conteggi,
+            "nodi_per_clip": conteggi, "color_science": scienza,
             "nota": "Le etichette dei nodi aiutano: chiamare i nodi (CST, bilanciamento, HSV, pelle) rende il controllo affidabile."}
 
 
+def _abilitata(item) -> bool:
+    try:
+        return item.GetClipEnabled() is not False
+    except AttributeError:
+        return True
+
+
+def _tratti_visibili(t, tr, item) -> list[tuple[int, int]]:
+    """Tratti [a, b) in cui la clip è in cima: le tracce sopra (abilitate) la coprono.
+    20 nov 2026: le clip di V1 sotto i B-roll di V2 davano le misure del B-roll."""
+    liberi = [(item.GetStart(), item.GetEnd())]
+    for sopra in range(tr + 1, (t.GetTrackCount("video") or 0) + 1):
+        if hasattr(t, "GetIsTrackEnabled") and t.GetIsTrackEnabled("video", sopra) is False:
+            continue
+        for alto in t.GetItemListInTrack("video", sopra) or []:
+            if not _abilitata(alto) or _e_overlay(alto):
+                continue
+            a2, b2 = alto.GetStart(), alto.GetEnd()
+            nuovi = []
+            for a, b in liberi:
+                if b2 <= a or a2 >= b:
+                    nuovi.append((a, b))
+                    continue
+                if a < a2:
+                    nuovi.append((a, a2))
+                if b2 < b:
+                    nuovi.append((b2, b))
+            liberi = nuovi
+    return [x for x in liberi if x[1] - x[0] >= 3]
+
+
+def _e_overlay(item) -> bool:
+    """Sottotitoli/grafiche con alfa sopra il girato non coprono la clip ai fini della color."""
+    mpi = item.GetMediaPoolItem() if hasattr(item, "GetMediaPoolItem") else None
+    nome = (item.GetName() or "").lower()
+    if any(k in nome for k in ("sottotitol", "overlay", "grafic", "titolo", "text+", "fusion title")):
+        return True
+    if mpi:
+        props = mpi.GetClipProperty() or {}
+        if str(props.get("Alpha mode", "")).lower() not in ("", "none"):
+            return True
+    return False
+
+
+def etichetta(tr: int, i: int, item) -> str:
+    return f"V{tr}_{i:03d}_{item.GetName()}"
+
+
 def uniformita(nome_timeline: str | None = None, cartella: str = "") -> dict:
-    """Un fotogramma a metà di ogni clip video, misure e clip fuori dalla mediana. Solo per segnalare."""
+    """Un fotogramma per clip video, preso a metà del tratto più lungo in cui la clip è VISIBILE (non coperta
+    da tracce sopra), misure e clip fuori dalla mediana. Le clip interamente coperte sono elencate a parte."""
     t = trova_timeline(nome_timeline)
     progetto().SetCurrentTimeline(t)
     cartella = cartella or os.path.join(immagini.CARTELLA_TEMP, "uniformita", time.strftime("%Y%m%d-%H%M%S"))
-    misure, file = {}, {}
+    misure, file, coperte, ids = {}, {}, [], {}
     for tr, i, item in _clip_video(t):
-        meta = (item.GetStart() + item.GetEnd()) // 2
-        nome = f"V{tr}_{i:03d}_{item.GetName()}"
-        path = immagini.esporta_frame(t, meta, os.path.join(cartella, nome + ".png"))
+        if _e_overlay(item):
+            continue
+        nome = etichetta(tr, i, item)
+        tratti = _tratti_visibili(t, tr, item)
+        if not tratti:
+            coperte.append(nome)
+            continue
+        a, b = max(tratti, key=lambda x: x[1] - x[0])
+        path = immagini.esporta_frame(t, (a + b) // 2, os.path.join(cartella, nome + ".png"))
         registra_file(path, "frame per controllo uniformità color")
         misure[nome] = immagini.analizza_colore(immagini.carica_rgb(path))
         file[nome] = path
+        ids[nome] = item.GetUniqueId()
     return {"esito": "ok", "misure": misure, "fuori_media": immagini.fuori_media(misure), "file": file,
+            "id": ids, "coperte_interamente": coperte,
+            "nota": "Le etichette (V1_003_nome) e gli id valgono anche in registra_controllo_scope e segna_modifica_color.",
             "attenzione": "Questi numeri NON sostituiscono gli scope di Resolve: servono solo a sapere dove guardare."}
+
+
+def _risolvi_clip(t, riferimento: str) -> list:
+    """Accetta id unico, etichetta 'V1_003_nome' o nome. Col nome: TUTTE le clip con quel nome."""
+    rif = riferimento.strip()
+    tutte = list(_clip_video(t))
+    per_id = [it for _, _, it in tutte if it.GetUniqueId() == rif]
+    if per_id:
+        return per_id
+    m = re.match(r"^V(\d+)_(\d+)_(.*)$", rif)
+    if m:
+        tr, i = int(m.group(1)), int(m.group(2))
+        per_etichetta = [it for t_, i_, it in tutte if t_ == tr and i_ == i]
+        if per_etichetta:
+            if per_etichetta[0].GetName() != m.group(3):
+                raise ErroreToolkit(f"In V{tr} posizione {i} c'è '{per_etichetta[0].GetName()}', non '{m.group(3)}': "
+                                    "la timeline è cambiata, rifai uniformita_color.")
+            return per_etichetta
+    per_nome = [it for _, _, it in tutte if it.GetName() == rif]
+    if not per_nome:
+        raise ErroreToolkit(f"Clip '{riferimento}' non trovata (né come id, né come etichetta V1_003_nome, né come nome).")
+    return per_nome
 
 
 # ---------------------------------------------------------------- cancello degli scope
@@ -125,16 +211,19 @@ def registra_controllo_scope(nome_clip: str, parade: str, waveform: str, vectors
         if len(valore.strip()) < 8:
             raise ErroreToolkit(f"Scrivi cosa hai letto davvero su {campo} (valori, non 'ok').")
     t = trova_timeline(nome_timeline)
-    item = next((it for _, _, it in _clip_video(t) if it.GetName() == nome_clip), None)
-    if item is None:
-        raise ErroreToolkit(f"Clip '{nome_clip}' non trovata nella timeline.")
+    items = _risolvi_clip(t, nome_clip)
     reg = _json_leggi(_registro(), {})
-    reg[item.GetUniqueId()] = {"nome": nome_clip, "ora": time.time(), "parade": parade, "waveform": waveform,
-                               "vectorscope": vectorscope, "pelle": pelle, "rumore": rumore, "esito": esito,
-                               "screenshot": screenshot, "impronta_grade": impronta_grade(_catena(item)),
-                               "valido": True}
+    for item in items:
+        reg[item.GetUniqueId()] = {"nome": item.GetName(), "ora": time.time(), "parade": parade,
+                                   "waveform": waveform, "vectorscope": vectorscope, "pelle": pelle,
+                                   "rumore": rumore, "esito": esito, "screenshot": screenshot,
+                                   "impronta_grade": impronta_grade(_catena(item)), "valido": True}
     _json_scrivi(_registro(), reg)
-    return {"esito": "ok", "registrato": nome_clip}
+    out = {"esito": "ok", "registrato": nome_clip, "clip_registrate": len(items)}
+    if len(items) > 1:
+        out["attenzione"] = (f"{len(items)} clip con lo stesso nome registrate insieme: vale solo se hai guardato "
+                             "gli scope su ognuna. Altrimenti usa l'etichetta V1_003_nome o l'id.")
+    return out
 
 
 def segna_modifica_color(nome_clip: str, nome_timeline: str | None = None) -> dict:
@@ -142,8 +231,8 @@ def segna_modifica_color(nome_clip: str, nome_timeline: str | None = None) -> di
     t = trova_timeline(nome_timeline)
     reg = _json_leggi(_registro(), {})
     toccate = 0
-    for _, _, it in _clip_video(t):
-        if it.GetName() == nome_clip and it.GetUniqueId() in reg:
+    for it in _risolvi_clip(t, nome_clip):
+        if it.GetUniqueId() in reg:
             reg[it.GetUniqueId()]["valido"] = False
             toccate += 1
     _json_scrivi(_registro(), reg)

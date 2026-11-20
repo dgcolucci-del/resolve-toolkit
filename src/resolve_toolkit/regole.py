@@ -38,6 +38,8 @@ PREDEFINITE = {
     "broll": {"battiti_max_per_clip": 2},
     # Percorsi
     "archivio_asset": "/Volumes/Tokiro 01/SFX",  # dall'8 nov 2026
+    # 20 nov 2026: overlay e grafiche del reel stanno nella cartella del progetto (es. REEL 003/_claude)
+    "cartella_progetti": "/Volumes/Tokiro 01/Progetti Video 2026",
     # Skill del protocollo (protocollo-reel-diego §1): tutte, sempre
     "skill_avvio": [
         "regole-motion-diego", "reel-mralextech", "montaggio-capri", "effetti-jamie-fenn",

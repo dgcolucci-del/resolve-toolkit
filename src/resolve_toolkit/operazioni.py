@@ -46,11 +46,17 @@ def frame_a_timecode(frame: int, fps: float) -> str:
     return f"{s // 3600:02d}:{s // 60 % 60:02d}:{s % 60:02d}:{f:02d}"
 
 
-def _apri_pagina_edit():
+def _apri_pagina_edit(forza: bool = False):
+    """Il render e l'export dei frame falliscono se Resolve è in Color/Deliver (20 nov 2026):
+    si passa sempre da Edit e si aspetta che la pagina sia davvero cambiata."""
     r = resolve()
-    if r.GetCurrentPage() != "edit":
+    if forza or r.GetCurrentPage() != "edit":
         r.OpenPage("edit")
-        time.sleep(ATTESA_PAGINA_S)
+        for _ in range(10):
+            time.sleep(ATTESA_PAGINA_S / 2)
+            if r.GetCurrentPage() == "edit":
+                break
+        time.sleep(ATTESA_PAGINA_S / 2)
 
 
 # ---------------------------------------------------------------- lettura
@@ -86,6 +92,14 @@ def inserisci_clip(impronta: str, nome_clip: str, inizio_sorgente: int, fine_sor
     t = trova_timeline(nome_timeline)
     mp = progetto().GetMediaPool()
     mpi = _clip_media_pool(nome_clip, cartella)
+    try:
+        lunghezza = int(str(mpi.GetClipProperty("Frames") or "0").strip() or 0)
+    except (ValueError, TypeError):
+        lunghezza = 0
+    if lunghezza and fine_sorgente > lunghezza:
+        fine_sorgente = lunghezza  # 20 nov 2026: overlay da 1007 frame rifiutato con fine oltre la clip
+    if fine_sorgente <= inizio_sorgente:
+        raise ErroreToolkit(f"La clip dura {lunghezza} frame: inizio_sorgente {inizio_sorgente} è oltre la fine.")
     inizio_tl = t.GetStartFrame()
     atteso_inizio = inizio_tl + posizione
     attesa_durata = fine_sorgente - inizio_sorgente
@@ -104,9 +118,24 @@ def inserisci_clip(impronta: str, nome_clip: str, inizio_sorgente: int, fine_sor
         return mp.AppendToTimeline([info]) or []
 
     conv = calibrazione.leggi()
+    rifiuto_superato = None
+    _apri_pagina_edit()
     nuovi = prova(conv)
     if not nuovi:
-        raise ErroreToolkit("Resolve ha rifiutato l'inserimento (nessuna clip creata). Niente è cambiato.")
+        # 20 nov 2026: rifiuto con endFrame = lunghezza clip e recordFrame assoluto. Si provano le altre
+        # convenzioni una alla volta; la posizione viene comunque verificata subito dopo.
+        for alt in ({"end_frame_escluso": not conv["end_frame_escluso"]},
+                    {"record_frame_assoluto": not conv["record_frame_assoluto"]},
+                    {"end_frame_escluso": not conv["end_frame_escluso"],
+                     "record_frame_assoluto": not conv["record_frame_assoluto"]}):
+            nuovi = prova({**conv, **alt})
+            if nuovi:
+                conv = {**conv, **alt}
+                rifiuto_superato = alt
+                break
+    if not nuovi:
+        raise ErroreToolkit("Resolve ha rifiutato l'inserimento con tutte le convenzioni (nessuna clip creata). "
+                            "Controlla che la traccia esista e non sia bloccata. Niente è cambiato.")
 
     def misura(items):
         it = items[0]
@@ -140,6 +169,10 @@ def inserisci_clip(impronta: str, nome_clip: str, inizio_sorgente: int, fine_sor
             )
         for k, v in correzioni.items():
             calibrazione.salva(k, v)
+    elif rifiuto_superato:
+        for k, v in rifiuto_superato.items():
+            calibrazione.salva(k, v)
+        correzioni = rifiuto_superato
 
     dopo = fotografia(nome_timeline)
     diff = confronta(prima, dopo)
@@ -155,6 +188,49 @@ def inserisci_clip(impronta: str, nome_clip: str, inizio_sorgente: int, fine_sor
         "confronto": diff,
         "impronta_nuova": dopo["impronta"],
     }
+
+
+def sostituisci_clip(impronta: str, id_clip: str, nome_clip_nuova: str, cartella: str | None = None,
+                     nome_timeline: str | None = None) -> dict:
+    """Sostituisce una clip (es. overlay sottotitoli v02 → v03) nella STESSA traccia e posizione.
+    Durata: quella della clip nuova, ma mai oltre la vecchia se dopo c'è un'altra clip sulla traccia."""
+    t = trova_timeline(nome_timeline)
+    verifica_lucchetto(impronta, nome_timeline)
+    trovata = None
+    for tipo in ("video", "audio"):
+        for tr in range(1, (t.GetTrackCount(tipo) or 0) + 1):
+            items = t.GetItemListInTrack(tipo, tr) or []
+            for k, it in enumerate(items):
+                if it.GetUniqueId() == id_clip:
+                    successiva = items[k + 1].GetStart() if k + 1 < len(items) else None
+                    trovata = (tipo, tr, it, successiva)
+    if not trovata:
+        raise ErroreToolkit(f"Clip con id {id_clip} non trovata nella timeline.")
+    tipo, tr, vecchia, successiva = trovata
+    nome_vecchia, inizio = vecchia.GetName(), vecchia.GetStart()
+    posizione = inizio - t.GetStartFrame()
+    mpi = _clip_media_pool(nome_clip_nuova, cartella)
+    try:
+        lunghezza = int(str(mpi.GetClipProperty("Frames") or "0").strip() or 0)
+    except (ValueError, TypeError):
+        lunghezza = 0
+    if not lunghezza:
+        raise ErroreToolkit(f"Non leggo la durata di '{nome_clip_nuova}'.")
+    if successiva is not None:
+        lunghezza = min(lunghezza, successiva - inizio)
+    if not t.DeleteClips([vecchia], False):
+        raise ErroreToolkit("Resolve non ha tolto la clip vecchia: niente è cambiato.")
+    dopo_delete = fotografia(nome_timeline)["impronta"]
+    try:
+        r = inserisci_clip(dopo_delete, nome_clip_nuova, 0, lunghezza, tr, posizione,
+                           tipo="video" if tipo == "video" else "audio", cartella=cartella,
+                           nome_timeline=nome_timeline)
+    except ErroreToolkit as e:
+        raise ErroreToolkit(f"Clip vecchia '{nome_vecchia}' TOLTA ma la nuova non è entrata: {e}. "
+                            f"Rimettila con inserisci_clip in traccia {tr}, posizione {posizione}. Avvisa Diego.")
+    r.update({"sostituita": nome_vecchia, "con": nome_clip_nuova, "traccia": tr,
+              "nota": "La clip vecchia resta nel media pool: si cancella solo col via di Diego."})
+    return r
 
 
 # ---------------------------------------------------------------- backup
@@ -245,75 +321,141 @@ def fotogrammi_ai_tagli(cartella_uscita: str, traccia: int = 1, nome_timeline: s
 
 # ---------------------------------------------------------------- render
 
+ATTESA_IN_CHIAMATA_S = 55  # il ponte col Mac chiude a 80 s: oltre si torna "in_corso" e si usa stato_render
+
+
 def render_sicuro(cartella: str, nome_file: str, conferma_diego: str, preset: str = "H.264 Master",
                   bitrate: int = 100000, mark_in: int | None = None, mark_out: int | None = None,
-                  solo_audio: bool = False, attesa_max_s: int = 1800,
-                  nome_timeline: str | None = None) -> dict:
+                  solo_audio: bool = False, formato: str = "", codec: str = "",
+                  larghezza: int = 0, altezza: int = 0, nome_timeline: str | None = None) -> dict:
     """Export solo su richiesta esplicita di Diego: conferma_diego = le sue parole.
-    Sequenza verificata (17 nov 2026): pagina Edit + 2 s, coda svuotata, job nuovo;
-    se StartRendering fallisce, UN solo job nuovo. Mai il pulsante Render della coda."""
+    formato/codec (es. mp4 + H264 o H265), larghezza/altezza (es. 2160x3840 per il 4K verticale).
+    Se il render dura più di ~55 s risponde "in_corso": poi stato_render(job_id)."""
     if not conferma_diego or not conferma_diego.strip():
         raise ErroreToolkit("Export solo su richiesta esplicita di Diego: riporta le sue parole in conferma_diego.")
-    return _render(cartella, nome_file, preset, bitrate, mark_in, mark_out, solo_audio, attesa_max_s, nome_timeline)
+    return _render(cartella, nome_file, preset, bitrate, mark_in, mark_out, solo_audio, nome_timeline,
+                   formato=formato, codec=codec, larghezza=larghezza, altezza=altezza)
 
 
 CARTELLA_PROVE = os.path.expanduser("~/Library/Application Support/ResolveToolkit/temp/render_prova")
 
 
 def render_di_prova(mark_in: int, mark_out: int, solo_audio: bool = False, nome_timeline: str | None = None) -> dict:
-    """Render di CONTROLLO (non una consegna): tratto breve in 1080p nella cartella temporanea del toolkit.
-    Serve a verificare effetti Fusion, grafiche, tagli e audio della timeline attuale."""
+    """Render di CONTROLLO (non una consegna): tratto in 1080p nella cartella temporanea del toolkit."""
     if mark_out <= mark_in:
         raise ErroreToolkit("mark_out deve essere dopo mark_in.")
     nome = f"prova_{time.strftime('%Y%m%d-%H%M%S')}"
-    r = _render(CARTELLA_PROVE, nome, "H.264 Master", 40000, mark_in, mark_out, solo_audio, 900, nome_timeline)
-    from .lavoro import registra_file
-    registra_file(r["file"], "render di prova")
+    r = _render(CARTELLA_PROVE, nome, "H.264 Master", 40000, mark_in, mark_out, solo_audio, nome_timeline,
+                larghezza=1080, altezza=1920)
+    if r.get("file"):
+        from .lavoro import registra_file
+        registra_file(r["file"], "render di prova")
     return r
 
 
-def _render(cartella, nome_file, preset, bitrate, mark_in, mark_out, solo_audio, attesa_max_s, nome_timeline):
+def _avvia(p):
+    job = p.AddRenderJob()
+    return job, bool(job) and p.StartRendering([job])
+
+
+def _render(cartella, nome_file, preset, bitrate, mark_in, mark_out, solo_audio, nome_timeline,
+            formato="", codec="", larghezza=0, altezza=0):
     p = progetto()
     t = trova_timeline(nome_timeline)
     p.SetCurrentTimeline(t)
-    _apri_pagina_edit()
+    _apri_pagina_edit(forza=True)
     p.DeleteAllRenderJobs()
     if not p.LoadRenderPreset(preset):
         raise ErroreToolkit(f"Preset '{preset}' non trovato.")
+    if solo_audio:
+        p.SetCurrentRenderFormatAndCodec("mov", "H264")  # contenitore; il video viene escluso
+    elif formato or codec:
+        if not p.SetCurrentRenderFormatAndCodec(formato or "mp4", codec or "H264"):
+            raise ErroreToolkit(f"Formato/codec rifiutati: {formato or 'mp4'} / {codec or 'H264'}.")
     impostazioni = {"TargetDir": cartella, "CustomName": nome_file, "SelectAllFrames": True}
     if solo_audio:
-        p.SetCurrentRenderFormatAndCodec("mov", "H264")  # formato contenitore; il video viene escluso
         impostazioni.update({"ExportVideo": False, "ExportAudio": True, "AudioCodec": "lpcm"})
     else:
-        impostazioni["VideoQuality"] = int(bitrate)  # "Best" viene rifiutato (15 nov 2026)
+        # Sempre esplicito: il Deliver ricorda "Export Video" spento dall'ultimo render audio (20 nov 2026)
+        impostazioni.update({"ExportVideo": True, "ExportAudio": True,
+                             "VideoQuality": int(bitrate)})  # "Best" viene rifiutato (15 nov 2026)
+        if (formato or "").lower() == "mp4":
+            impostazioni["AudioCodec"] = "aac"
+    if larghezza and altezza:
+        impostazioni.update({"FormatWidth": int(larghezza), "FormatHeight": int(altezza)})
     if mark_in is not None and mark_out is not None:
         inizio = t.GetStartFrame()
         impostazioni.update({"SelectAllFrames": False, "MarkIn": inizio + mark_in, "MarkOut": inizio + mark_out})
     if not p.SetRenderSettings(impostazioni):
         raise ErroreToolkit(f"Impostazioni di render rifiutate: {impostazioni}")
 
-    job = p.AddRenderJob()
-    partito = bool(job) and p.StartRendering([job])
+    job, partito = _avvia(p)
     tentativi = 1
     if not partito:
+        # 20 nov 2026: dopo la pagina Color il primo StartRendering fallisce; Edit di nuovo + job nuovo
         p.DeleteAllRenderJobs()
-        job = p.AddRenderJob()
-        partito = bool(job) and p.StartRendering([job])
+        _apri_pagina_edit(forza=True)
+        time.sleep(1.5)
+        job, partito = _avvia(p)
         tentativi = 2
     if not partito:
         raise ErroreToolkit("Il render non parte nemmeno con un job nuovo. Non premere Render nella coda: avvisa Diego.")
 
+    lavoro_info = {"job_id": job, "cartella": cartella, "nome_file": nome_file, "solo_audio": solo_audio,
+                   "atteso": {"larghezza": larghezza or None, "altezza": altezza or None}}
+    _salva_job(lavoro_info)
     t0 = time.time()
     while p.IsRenderingInProgress():
-        if time.time() - t0 > attesa_max_s:
-            raise ErroreToolkit(f"Render ancora in corso dopo {attesa_max_s} s.")
+        if time.time() - t0 > ATTESA_IN_CHIAMATA_S:
+            st = p.GetRenderJobStatus(job) or {}
+            return {"esito": "in_corso", "job_id": job, "tentativi": tentativi,
+                    "percentuale": st.get("CompletionPercentage"),
+                    "mancano_s": round((st.get("EstimatedTimeRemainingInMs") or 0) / 1000),
+                    "prossimo_passo": "stato_render(job_id) tra qualche minuto; non avviare un altro render"}
         time.sleep(2)
-    stato = p.GetRenderJobStatus(job) or {}
-    estensione = ".mov" if solo_audio else ""
+    return stato_render(job, tentativi)
+
+
+def _file_jobs():
+    return os.path.expanduser("~/Library/Application Support/ResolveToolkit/render_jobs.json")
+
+
+def _salva_job(info):
+    import json
+    try:
+        with open(_file_jobs()) as f:
+            d = json.load(f)
+    except (OSError, ValueError):
+        d = {}
+    d[info["job_id"]] = info
+    os.makedirs(os.path.dirname(_file_jobs()), exist_ok=True)
+    with open(_file_jobs(), "w") as f:
+        json.dump(d, f)
+
+
+def stato_render(job_id: str, tentativi: int | None = None) -> dict:
+    """Stato di un render avviato da render_sicuro/render_di_prova; a fine render trova il file."""
+    import json
+    p = progetto()
+    try:
+        with open(_file_jobs()) as f:
+            info = json.load(f).get(job_id)
+    except (OSError, ValueError):
+        info = None
+    if not info:
+        raise ErroreToolkit(f"Job {job_id} non avviato dal toolkit.")
+    st = p.GetRenderJobStatus(job_id) or {}
+    if st.get("JobStatus") in ("Rendering", "Ready") or p.IsRenderingInProgress():
+        return {"esito": "in_corso", "job_id": job_id, "percentuale": st.get("CompletionPercentage"),
+                "mancano_s": round((st.get("EstimatedTimeRemainingInMs") or 0) / 1000)}
+    cartella, nome_file = info["cartella"], info["nome_file"]
     candidati = [f for f in os.listdir(cartella) if f.startswith(nome_file)] if os.path.isdir(cartella) else []
-    if stato.get("JobStatus") != "Complete" or not candidati:
-        raise ErroreToolkit(f"Render non completato: stato {stato}, file trovati {candidati}.")
-    file = os.path.join(cartella, sorted(candidati)[-1])
-    return {"esito": "ok", "file": file, "byte": os.path.getsize(file), "tentativi": tentativi,
-            "stato": stato, "nota": estensione and "solo audio in mov/lpcm",
-            "prossimo_passo": "controllo_consegna sul file (numeri veri, non le impostazioni)"}
+    if st.get("JobStatus") != "Complete" or not candidati:
+        raise ErroreToolkit(f"Render non completato: stato {st}, file trovati {candidati}.")
+    file = os.path.join(cartella, sorted(candidati, key=lambda f: os.path.getmtime(os.path.join(cartella, f)))[-1])
+    out = {"esito": "ok", "file": file, "byte": os.path.getsize(file), "stato": st,
+           "nota": "solo audio in mov/lpcm" if info.get("solo_audio") else "",
+           "prossimo_passo": "controllo_consegna sul file (numeri veri, non le impostazioni)"}
+    if tentativi:
+        out["tentativi"] = tentativi
+    return out

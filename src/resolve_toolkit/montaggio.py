@@ -3,6 +3,7 @@ riprese alternative da far scegliere a Diego, trascrizione con whisper sul Mac."
 from __future__ import annotations
 
 import json
+import time
 import os
 import subprocess
 import tempfile
@@ -95,21 +96,7 @@ def timeline_alternative(riprese: list[dict], nome_timeline: str, pausa_s: float
     return {"esito": "ok", "timeline": nome_timeline, "riprese": fatte, "nota": "Far scegliere a Diego."}
 
 
-def trascrivi(file_audio: str, lingua: str = "it", modello: str = "") -> dict:
-    """whisper.cpp sul Mac (vendor del progetto), parole con tempi. Va riletta da Diego."""
-    cli = os.path.join(VENDOR, "whisper.cpp/build/bin/whisper-cli")
-    modello = modello or os.path.join(VENDOR, "whisper.cpp/models/ggml-large-v3.bin")
-    for p_ in (cli, modello):
-        if not os.path.exists(p_):
-            raise ErroreToolkit(f"Non trovo {p_}.")
-    tmp = tempfile.mkdtemp(prefix="trascrizione_")
-    wav = os.path.join(tmp, "audio16k.wav")
-    subprocess.run([audio._ffmpeg(), "-y", "-v", "error", "-i", file_audio, "-ac", "1", "-ar", "16000", wav], check=True)
-    base = os.path.join(tmp, "testo")
-    r = subprocess.run([cli, "-m", modello, "-f", wav, "-l", lingua, "-ml", "1", "-sow", "-ojf", "-of", base],
-                       capture_output=True, text=True)
-    if r.returncode != 0:
-        raise ErroreToolkit(f"whisper ha dato errore: {r.stderr[-500:]}")
+def _leggi_trascrizione(base):
     with open(base + ".json") as f:
         dati = json.load(f)
     parole = []
@@ -118,4 +105,56 @@ def trascrivi(file_audio: str, lingua: str = "it", modello: str = "") -> dict:
         if testo:
             parole.append({"testo": testo, "inizio_s": s["offsets"]["from"] / 1000, "fine_s": s["offsets"]["to"] / 1000})
     return {"esito": "ok", "parole": parole, "testo": " ".join(p["testo"] for p in parole),
+            "json": base + ".json",
             "nota": "I tempi di whisper vanno corretti sull'audio vero; il testo va fatto rileggere a Diego."}
+
+
+def trascrivi(file_audio: str, lingua: str = "it", modello: str = "") -> dict:
+    """whisper.cpp sul Mac, IN BACKGROUND (20 nov 2026: in sincrono superava il limite di 80 s del ponte).
+    Prima chiamata: avvia e risponde "in_corso". Richiamala con lo stesso file: risponde col testo quando ha finito.
+    Accetta wav, mov, mp4: l'audio viene estratto a 16 kHz mono. Il risultato resta in <file>.trascrizione.json."""
+    if not os.path.exists(file_audio):
+        raise ErroreToolkit(f"Non trovo {file_audio}.")
+    base = os.path.splitext(file_audio)[0] + ".trascrizione"
+    stato = base + ".stato"
+    if os.path.exists(base + ".json") and os.path.getmtime(base + ".json") >= os.path.getmtime(file_audio):
+        return _leggi_trascrizione(base)
+    if os.path.exists(stato):
+        with open(stato) as f:
+            info = json.load(f)
+        pid = info.get("pid")
+        vivo = False
+        if pid:
+            try:
+                os.kill(pid, 0)
+                vivo = True
+            except OSError:
+                vivo = False
+        if vivo:
+            trascorsi = round(time.time() - info.get("avvio", time.time()))
+            return {"esito": "in_corso", "trascorsi_s": trascorsi,
+                    "stima_totale_s": info.get("stima_s"),
+                    "prossimo_passo": "richiama trascrivi con lo stesso file tra 30-60 s"}
+        log = info.get("log", "")
+        coda = open(log).read()[-500:] if log and os.path.exists(log) else ""
+        os.remove(stato)
+        raise ErroreToolkit(f"whisper si è fermato senza risultato. Ultime righe: {coda}")
+
+    cli = os.path.join(VENDOR, "whisper.cpp/build/bin/whisper-cli")
+    modello = modello or os.path.join(VENDOR, "whisper.cpp/models/ggml-large-v3.bin")
+    for p_ in (cli, modello):
+        if not os.path.exists(p_):
+            raise ErroreToolkit(f"Non trovo {p_}.")
+    tmp = tempfile.mkdtemp(prefix="trascrizione_")
+    wav = os.path.join(tmp, "audio16k.wav")
+    subprocess.run([audio._ffmpeg(), "-y", "-v", "error", "-i", file_audio, "-vn", "-ac", "1", "-ar", "16000", wav],
+                   check=True, timeout=60)
+    durata = os.path.getsize(wav) / 32000  # 16 kHz mono 16 bit
+    log = os.path.join(tmp, "whisper.log")
+    with open(log, "w") as lf:
+        proc = subprocess.Popen([cli, "-m", modello, "-f", wav, "-l", lingua, "-ml", "1", "-sow", "-ojf", "-of", base],
+                                stdout=lf, stderr=subprocess.STDOUT, start_new_session=True)
+    with open(stato, "w") as f:
+        json.dump({"pid": proc.pid, "avvio": time.time(), "log": log, "stima_s": round(durata * 2.3)}, f)
+    return {"esito": "in_corso", "durata_audio_s": round(durata, 1), "stima_totale_s": round(durata * 2.3),
+            "prossimo_passo": "richiama trascrivi con lo stesso file tra 30-60 s"}

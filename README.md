@@ -12,20 +12,32 @@ Collegamento tra Claude e DaVinci Resolve Studio, fatto per Diego Colucci. Le op
 - **Autocalibrazione e sondaggio:** convenzioni dell'API misurate al primo uso, funzioni disponibili controllate su ogni Mac.
 - **Registro e passaggi:** ogni comando finisce in `~/Library/Logs/ResolveToolkit/`. A fine fase `scrivi_passaggio` lascia lo stato per la chat successiva.
 
-## Comandi (50)
+## Comandi (52)
 
 | Area | Comandi |
 |---|---|
 | Avvio | `avvio_reel`, `sondaggio_api`, `regole_diego`, `elenca_timeline`, `stato_timeline` |
-| Montaggio | `inserisci_clip`, `backup_timeline`, `proposta_tagli`, `monta_parlato`, `timeline_alternative`, `trascrivi`, `fotogrammi_ai_tagli` |
+| Montaggio | `inserisci_clip`, `sostituisci_clip`, `backup_timeline`, `proposta_tagli`, `monta_parlato`, `timeline_alternative`, `trascrivi`, `fotogrammi_ai_tagli` |
 | Color | `stato_color`, `uniformita_color`, `registra_controllo_scope`, `segna_modifica_color`, `color_completa`, `assegna_gruppo_colore` |
 | Grafiche | `mappa_zone`, `piano_sottotitoli`, `crea_titolo_fusion`, `controllo_grafiche`, `verifica_font` |
 | Effetti | `applica_effetto` (punch_in, shake, flash, whip, blur, glow, speed_ramp), `transizione` (whip, flash, zoom, blur), `salva_fusion`, `clip_orizzontali`, `smart_reframe` |
 | Musica | `analizza_brano`, `verifica_taglio_musica`, `piano_base`, `piano_raffica` |
 | Audio | `isolamento_voce`, `misura_loudness`, `trova_silenzi`, `livelli_nei_punti`, `registra_misure_audio`, `chiudi_audio` |
 | Verifica | `render_di_prova`, `verifica_render_prova`, `controllo_consegna` |
-| Export | `render_sicuro` (solo con le parole di Diego) |
+| Export | `render_sicuro` (solo con le parole di Diego; formato/codec/risoluzione, es. MP4 4K 2160x3840), `stato_render` |
 | Lavoro | `elenca_file_creati`, `sposta_nel_cestino`, `importa_asset`, `salva_progetto`, `scrivi_passaggio`, `leggi_passaggio`, `controlla_novita`, `registra_stile` |
+
+## Novità 0.2.3 (20 nov 2026, dopo REEL 003 Piero Angela)
+
+- `render_sicuro`: Export Video e Export Audio sempre impostati (prima il Deliver ricordava "video spento" dall'ultimo render audio e uscivano file solo audio); parametri formato, codec, larghezza, altezza per il 4K MP4; i render lunghi rispondono "in_corso" entro ~55 s e si seguono con `stato_render` (prima superavano il limite di 80 s del collegamento); se non parte riprova da Edit con un job nuovo.
+- `inserisci_clip`: la fine viene troncata alla lunghezza vera della clip; se Resolve rifiuta, prova le altre convenzioni prima di arrendersi.
+- `sostituisci_clip`: nuova versione di un overlay nella stessa traccia e posizione.
+- `trascrivi`: whisper gira in background; si richiama con lo stesso file finché dà il testo; accetta anche mov/mp4.
+- `uniformita_color`: misura ogni clip in un punto dove è davvero visibile (non sotto un B-roll); le clip coperte del tutto sono elencate a parte. Restituisce etichette e id.
+- `registra_controllo_scope` / `segna_modifica_color`: accettano id, etichetta `V1_003_nome` o nome (con nomi doppi le registra tutte e avvisa).
+- `importa_asset`: anche dalle cartelle dei progetti (overlay in `REEL xxx/_claude`).
+- Export dei frame: secondo tentativo da Edit.
+- `stato_color`: avviso sui progetti YRGB non gestiti (esposizione con Offset in "Use timeline", non Gain in Linear).
 
 ## Cosa resta nella UI di Resolve (non esiste nell'API)
 
