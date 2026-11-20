@@ -4,15 +4,19 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "resolve-toolkit"
-version = "0.2.0"
+version = "0.2.1"
 description = "Comandi DaVinci Resolve con regole e verifiche integrate (Diego Colucci)"
 requires-python = ">=3.10"
 dependencies = [
   "mcp>=1.2",
   "numpy>=1.24",
   "pillow>=10",
-  "librosa>=0.10",
-  "soundfile>=0.12",
+]
+
+[project.optional-dependencies]
+# Pesanti: se una non si installa, il resto del toolkit funziona lo stesso
+musica = ["librosa>=0.10", "soundfile>=0.12"]
+visione = [
   "opencv-python-headless>=4.8",
   "pyobjc-framework-Vision>=10; sys_platform == 'darwin'",
   "pyobjc-framework-Quartz>=10; sys_platform == 'darwin'",

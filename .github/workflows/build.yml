@@ -20,24 +20,22 @@ jobs:
       - run: python -m pytest -q tests
 
   pkg:
+    # Il .pkg si costruisce su Linux con xar + mkbom: niente attesa dei Mac di GitHub
     needs: test
-    runs-on: macos-latest
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Prepara il contenuto del pacchetto
+      - name: Strumenti per il formato pkg di Apple
         run: |
-          mkdir -p payload/src
-          cp -R src pyproject.toml README.md installer payload/src/
-          chmod +x installer/scripts/postinstall
+          sudo apt-get update && sudo apt-get install -y libxml2-dev libssl-dev zlib1g-dev autoconf cpio
+          git clone --depth 1 https://github.com/hogliux/bomutils /tmp/bomutils
+          make -C /tmp/bomutils -j4
+          git clone --depth 1 https://github.com/mackyle/xar /tmp/xar
+          cd /tmp/xar/xar
+          sed -i 's/OpenSSL_add_all_ciphers/OPENSSL_init_crypto/' configure.ac
+          ./autogen.sh --noconfigure && ./configure -q && make -j4
       - name: Compila il .pkg
-        run: |
-          VERSIONE=$(grep '^version' pyproject.toml | cut -d'"' -f2)
-          pkgbuild --root payload \
-            --scripts installer/scripts \
-            --identifier it.colucci.resolvetoolkit \
-            --version "$VERSIONE" \
-            --install-location "/Library/Application Support/ResolveToolkit" \
-            "ResolveToolkit-$VERSIONE.pkg"
+        run: installer/costruisci_pkg.sh /tmp/xar/xar/src/xar /tmp/bomutils/build/bin/mkbom
       - uses: actions/upload-artifact@v4
         with:
           name: ResolveToolkit-pkg

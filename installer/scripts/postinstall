@@ -1,6 +1,7 @@
 #!/bin/bash
 # Post-installazione del Resolve Toolkit: ambiente Python per l'utente e collegamento a Claude Desktop.
-set -euo pipefail
+# Log completo: ~/Library/Logs/ResolveToolkit/installazione.log
+set -uo pipefail
 
 SORGENTE="/Library/Application Support/ResolveToolkit/src"
 UTENTE="$(stat -f%Su /dev/console)"
@@ -13,20 +14,36 @@ come_utente mkdir -p "$DEST" "$(dirname "$LOG")"
 exec >>"$LOG" 2>&1
 echo "=== installazione $(date) per $UTENTE"
 
-# Python 3.10-3.14 (lo stesso tipo che usa già l'MCP di Resolve)
+fallito() { echo "ERRORE: $1"; exit 1; }
+
+# Python 3.10+ (preferenza per 3.12/3.11: le librerie pesanti hanno i pacchetti pronti)
 PY=""
 for c in /usr/local/bin/python3.12 /usr/local/bin/python3.11 /usr/local/bin/python3.13 /usr/local/bin/python3.14 \
+         /Library/Frameworks/Python.framework/Versions/Current/bin/python3 \
          /opt/homebrew/bin/python3.12 /opt/homebrew/bin/python3 /usr/local/bin/python3; do
-  if [ -x "$c" ]; then PY="$c"; break; fi
+  if [ -x "$c" ] && "$c" -c 'import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)'; then PY="$c"; break; fi
 done
-if [ -z "$PY" ]; then
-  echo "ERRORE: nessun Python 3.10+ trovato"; exit 1
-fi
+[ -n "$PY" ] || fallito "nessun Python 3.10+ trovato (installalo da python.org)"
 echo "Python: $PY ($("$PY" --version))"
 
-come_utente "$PY" -m venv "$DEST/venv"
-come_utente "$DEST/venv/bin/pip" install --upgrade pip
-come_utente "$DEST/venv/bin/pip" install --upgrade "$SORGENTE"
+# Copia del sorgente in una cartella dell'utente: pip deve poter scrivere durante la build
+LAVORO="$(come_utente mktemp -d /tmp/resolvetoolkit.XXXXXX)"
+come_utente cp -R "$SORGENTE/." "$LAVORO/" || fallito "copia del sorgente"
+
+come_utente "$PY" -m venv --clear "$DEST/venv" || fallito "creazione ambiente Python"
+come_utente "$DEST/venv/bin/python" -m pip install -q --upgrade pip || echo "AVVISO: aggiornamento pip non riuscito"
+come_utente "$DEST/venv/bin/python" -m pip install -q "$LAVORO" || fallito "installazione del toolkit"
+echo "OK: nucleo installato"
+
+# Parti pesanti: se non vanno, il toolkit funziona lo stesso e lo dice
+for extra in musica visione; do
+  if come_utente "$DEST/venv/bin/python" -m pip install -q "$LAVORO[$extra]"; then
+    echo "OK: $extra"
+  else
+    echo "AVVISO: $extra non installato (i comandi relativi risponderanno che manca)"
+  fi
+done
+come_utente rm -rf "$LAVORO"
 
 # Collegamento a Claude Desktop, con copia di sicurezza della configurazione
 CONF="$CASA/Library/Application Support/Claude/claude_desktop_config.json"
@@ -34,5 +51,11 @@ come_utente mkdir -p "$(dirname "$CONF")"
 if [ -f "$CONF" ]; then
   come_utente cp "$CONF" "$CONF.backup-resolve-toolkit-$(date +%Y%m%d-%H%M%S)"
 fi
-come_utente "$DEST/venv/bin/python" "$SORGENTE/installer/collega_claude.py" "$CONF" "$DEST/venv/bin/resolve-toolkit"
+come_utente "$DEST/venv/bin/python" "$SORGENTE/installer/collega_claude.py" "$CONF" "$DEST/venv/bin/resolve-toolkit" \
+  || fallito "collegamento a Claude Desktop"
+
+# Prova di avvio del server (senza Resolve deve rispondere, non andare in crash)
+come_utente "$DEST/venv/bin/python" -c "import resolve_toolkit.server as s; print('server ok,', 'versione', __import__('resolve_toolkit').__version__)" \
+  || fallito "il server non si avvia"
 echo "OK: installazione completata. Riavvia Claude Desktop."
+exit 0
