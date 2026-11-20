@@ -211,21 +211,53 @@ def test_piano_raffica_regole():
         musica.piano_raffica(g, 10, 14, clip)
 
 
-def test_analizza_brano_su_click_reale(tmp_path):
-    import soundfile as sf
-    sr, bpm = 22050, 120
-    durata = 40
-    y = np.zeros(sr * durata, np.float32)
-    for k in range(int(durata * bpm / 60)):
-        i = int(k * 60 / bpm * sr)
-        f = 1000 if k % 4 == 0 else 600
-        t = np.arange(int(0.05 * sr)) / sr
-        y[i:i + len(t)] += (0.8 if k % 4 == 0 else 0.4) * np.sin(2 * np.pi * f * t) * np.exp(-t * 60)
-    path = tmp_path / "click.wav"
-    sf.write(path, y, sr)
-    out = musica.analizza_brano(str(path), bpm_artlist=120)
+def _scrivi_wav(path, y, sr):
+    import wave
+    pcm = (np.clip(y, -1, 1) * 32767).astype("<i2")
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(1); w.setsampwidth(2); w.setframerate(sr); w.writeframes(pcm.tobytes())
+
+
+def _brano_sintetico(bpm, battute=40, sr=22050, partenza_s=0.8):
+    """Cassa su ogni battito, accordo che cambia a ogni battuta, timbro che cambia ogni 8 battute."""
+    periodo = 60 / bpm
+    durata = partenza_s + battute * 4 * periodo + 2
+    t_tot = np.arange(int(durata * sr)) / sr
+    y = np.zeros_like(t_tot, dtype=np.float32)
+    accordi = [(220, 277, 330), (196, 247, 294), (175, 220, 262), (165, 208, 247)]
+    for k in range(battute * 4):
+        t0 = partenza_s + k * periodo
+        i = int(t0 * sr)
+        n = int(0.12 * sr)
+        tt = np.arange(n) / sr
+        y[i:i + n] += 0.6 * np.sin(2 * np.pi * 60 * tt) * np.exp(-tt * 30)
+        if k % 4 == 0:  # nuova battuta: nuovo accordo
+            n2 = int(4 * periodo * sr)
+            tt2 = np.arange(n2) / sr
+            acc = accordi[(k // 4) % 4]
+            seg = sum(np.sin(2 * np.pi * f * tt2) for f in acc) * 0.06
+            if (k // 32) % 2 == 1:  # frase B: timbro più brillante
+                seg = seg + 0.05 * np.sign(np.sin(2 * np.pi * acc[0] * 4 * tt2))
+            y[i:i + n2] += seg[: len(y) - i]
+    return y, sr, partenza_s, periodo
+
+
+@pytest.mark.parametrize("bpm", [107.67, 124.0, 93.5])
+def test_analizza_brano_numpy(tmp_path, bpm):
+    y, sr, partenza, periodo = _brano_sintetico(bpm)
+    path = tmp_path / "brano.wav"
+    _scrivi_wav(path, y, sr)
+    out = musica.analizza_brano(str(path), bpm_artlist=bpm)
+    assert abs(out["bpm_misurato"] - bpm) < 0.1, out["bpm_misurato"]
     assert out["confronto_bpm"].startswith("coincide")
-    assert abs(out["durata_battito_s"] - 0.5) < 0.02
+    # le battute devono cadere sui veri primi battiti (multipli di 4 battiti dalla partenza)
+    for b in out["battute_s"][:6]:
+        k = (b - partenza) / periodo
+        assert abs(k - round(k / 4) * 4) < 0.15, (b, k)
+    # almeno una frase rilevata su un vero inizio frase (ogni 32 battiti)
+    assert any(abs(((f - partenza) / periodo) % 32) < 0.2 or abs(((f - partenza) / periodo) % 32 - 32) < 0.2
+               for f in out["frasi_s"]), out["frasi_s"]
+    assert abs(out["inizio_vero_s"] - partenza) < 0.1
 
 
 # ---------------------------------------------------------------- lavoro

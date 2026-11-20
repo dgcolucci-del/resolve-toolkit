@@ -16,7 +16,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: sudo apt-get update && sudo apt-get install -y ffmpeg
-      - run: pip install "mcp>=1.2" numpy pillow librosa soundfile opencv-python-headless pytest
+      - run: pip install "mcp>=1.2" numpy pillow opencv-python-headless pytest
       - run: python -m pytest -q tests
 
   pkg:

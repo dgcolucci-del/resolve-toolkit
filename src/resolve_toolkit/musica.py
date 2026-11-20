@@ -12,12 +12,104 @@ from .connessione import ErroreToolkit
 from .regole import regole
 
 
-def _librosa():
-    try:
-        import librosa  # type: ignore
-        return librosa
-    except ImportError:
-        raise ErroreToolkit("librosa non installato nel toolkit (pip install librosa).")
+# ---------------------------------------------------------------- analisi audio solo numpy
+# librosa non si installa sui Mac Intel con Python 3.14 (numba/llvmlite senza pacchetti pronti, 20 nov 2026):
+# qui gli stessi passaggi (flusso spettrale, autocorrelazione, programmazione dinamica di Ellis) in numpy.
+
+SR = 22050
+
+
+def _stft_mag(x: np.ndarray, n_fft: int, hop: int) -> np.ndarray:
+    if len(x) < n_fft:
+        x = np.pad(x, (0, n_fft - len(x)))
+    n = 1 + (len(x) - n_fft) // hop
+    finestra = np.hanning(n_fft).astype(np.float32)
+    out = np.empty((n_fft // 2 + 1, n), dtype=np.float32)
+    blocco = 2048
+    for i in range(0, n, blocco):
+        idx = np.arange(i, min(n, i + blocco))
+        frames = np.stack([x[j * hop:j * hop + n_fft] for j in idx]) * finestra
+        out[:, idx] = np.abs(np.fft.rfft(frames, axis=1)).T
+    return out
+
+
+N_FFT_ONSET = 512  # finestra corta: con 2048 i battiti escono ~35 ms in anticipo (misurato il 20 nov 2026)
+
+
+def inviluppo_onset(x: np.ndarray, sr: int = SR, hop: int = 128) -> np.ndarray:
+    S = np.log1p(100 * _stft_mag(x, N_FFT_ONSET, hop))
+    flusso = np.maximum(0, np.diff(S, axis=1)).sum(axis=0)
+    flusso = np.r_[0, flusso]
+    flusso -= np.convolve(flusso, np.ones(31) / 31, mode="same")  # toglie l'andamento lento
+    flusso = np.maximum(flusso, 0)
+    return flusso / (flusso.max() + 1e-9)
+
+
+def stima_periodo(onset: np.ndarray, sr: int, hop: int, bpm_min=60, bpm_max=200) -> float:
+    o = onset - onset.mean()
+    n = len(o)
+    f = np.fft.rfft(o, 2 * n)
+    ac = np.fft.irfft(f * np.conj(f))[:n]
+    fps = sr / hop
+    lag_min, lag_max = int(fps * 60 / bpm_max), int(fps * 60 / bpm_min)
+    lags = np.arange(lag_min, min(lag_max, n - 1))
+    bpm = 60 * fps / lags
+    peso = np.exp(-0.5 * (np.log2(bpm / 120.0) / 1.0) ** 2)  # preferenza morbida attorno a 120
+    k = int(np.argmax(ac[lags] * peso))
+    l = lags[k]
+    if 0 < k < len(lags) - 1:  # interpolazione parabolica
+        y0, y1, y2 = ac[l - 1], ac[l], ac[l + 1]
+        d = 0.5 * (y0 - y2) / (y0 - 2 * y1 + y2 + 1e-12)
+        return float(l + d)
+    return float(l)
+
+
+def traccia_battiti(onset: np.ndarray, periodo: float, stretto: float = 100.0) -> np.ndarray:
+    n = len(onset)
+    punteggio = onset.copy()
+    precedente = -np.ones(n, dtype=int)
+    p = periodo
+    for t in range(n):
+        a, b = int(t - 2 * p), int(t - p / 2)
+        if b <= 0:
+            continue
+        a = max(a, 0)
+        prev = np.arange(a, b)
+        costo = -stretto * np.log((t - prev) / p) ** 2
+        cand = punteggio[prev] + costo
+        k = int(np.argmax(cand))
+        punteggio[t] = onset[t] + cand[k]
+        precedente[t] = prev[k]
+    # ultimo battito: il migliore nell'ultimo periodo
+    coda = np.arange(max(0, n - int(p)), n)
+    t = int(coda[np.argmax(punteggio[coda])])
+    battiti = [t]
+    while precedente[t] >= 0:
+        t = precedente[t]
+        battiti.append(t)
+    return np.array(battiti[::-1])
+
+
+def _per_battito(M: np.ndarray, frame_battiti: np.ndarray, agg=np.median) -> np.ndarray:
+    bordi = np.r_[frame_battiti, M.shape[1]]
+    return np.stack([agg(M[:, bordi[i]:max(bordi[i] + 1, bordi[i + 1])], axis=1) for i in range(len(frame_battiti))], axis=1)
+
+
+def croma_e_timbro(x: np.ndarray, sr: int, battiti_s: np.ndarray):
+    hop, n_fft = 512, 4096
+    S = _stft_mag(x, n_fft, hop)
+    freq = np.fft.rfftfreq(n_fft, 1 / sr)
+    utili = (freq > 55) & (freq < 5000)
+    classe = np.zeros(len(freq), dtype=int)
+    classe[utili] = (np.round(12 * np.log2(freq[utili] / 440.0)) % 12).astype(int)
+    croma = np.zeros((12, S.shape[1]), dtype=np.float32)
+    for c in range(12):
+        croma[c] = S[utili & (classe == c)].sum(axis=0)
+    croma /= croma.max(axis=0, keepdims=True) + 1e-9
+    bande = np.geomspace(40, sr / 2 - 1, 21)
+    timbro = np.stack([np.log1p(S[(freq >= bande[i]) & (freq < bande[i + 1])].sum(axis=0)) for i in range(20)])
+    fb = np.clip((battiti_s * sr / hop).astype(int), 0, S.shape[1] - 1)
+    return _per_battito(croma, fb), _per_battito(timbro, fb, np.mean)
 
 
 def griglia_da_battiti(battiti_s: np.ndarray, cambio_armonico: np.ndarray, novita_timbrica: np.ndarray) -> dict:
@@ -40,31 +132,32 @@ def griglia_da_battiti(battiti_s: np.ndarray, cambio_armonico: np.ndarray, novit
 
 
 def analizza_brano(file: str, bpm_artlist: float | None = None) -> dict:
-    lb = _librosa()
-    y, sr = lb.load(file, sr=22050, mono=True)
-    hop_fine = 128  # ~6 ms: con 512 (23 ms) il BPM esce sbagliato di 1-3 (errore del 10 nov: 123 invece di 124)
-    onset = lb.onset.onset_strength(y=y, sr=sr, hop_length=hop_fine)
-    tempo, frames_fini = lb.beat.beat_track(onset_envelope=onset, sr=sr, hop_length=hop_fine, units="frames")
-    tempo = float(np.atleast_1d(tempo)[0])
-    battiti = lb.frames_to_time(frames_fini, sr=sr, hop_length=hop_fine)
+    from .audio import leggi_pcm
+    y, sr = leggi_pcm(file, SR)
+    if len(y) < sr * 8:
+        raise ErroreToolkit("Brano troppo corto per misurare il tempo.")
+    hop = 128  # ~6 ms: con 512 (23 ms) il BPM esce sbagliato di 1-3 (errore del 10 nov: 123 invece di 124)
+    onset = inviluppo_onset(y, sr, hop)
+    periodo_frame = stima_periodo(onset, sr, hop)
+    frame_b = traccia_battiti(onset, periodo_frame)
+    battiti = (frame_b * hop + N_FFT_ONSET / 2) / sr  # tempo al centro della finestra
     if len(battiti) < 16:
         raise ErroreToolkit("Troppi pochi battiti rilevati: brano non adatto o file sbagliato.")
     # periodo dalla retta che passa per tutti i battiti: molto più preciso della mediana degli intervalli
     periodo = float(np.polyfit(np.arange(len(battiti)), battiti, 1)[0])
     regolarita = float(np.std(np.diff(battiti)) / periodo)
     bpm_misurato = round(60.0 / periodo, 2)
-    frames = lb.time_to_frames(battiti, sr=sr, hop_length=512)
-    chroma = lb.util.sync(lb.feature.chroma_cqt(y=y, sr=sr), frames, aggregate=np.median)
-    mfcc = lb.util.sync(lb.feature.mfcc(y=y, sr=sr, n_mfcc=13), frames, aggregate=np.mean)
-    cambio = np.r_[0, np.linalg.norm(np.diff(chroma, axis=1), axis=0)][: len(battiti)]
-    novita = np.r_[0, np.linalg.norm(np.diff(mfcc, axis=1), axis=0)][: len(battiti)]
+    croma, timbro = croma_e_timbro(y, sr, battiti)
+    cambio = np.r_[0, np.linalg.norm(np.diff(croma, axis=1), axis=0)]
+    novita = np.r_[0, np.linalg.norm(np.diff(timbro, axis=1), axis=0)]
     g = griglia_da_battiti(battiti, cambio, novita)
-    rms = lb.feature.rms(y=y)[0]
-    t_rms = lb.frames_to_time(np.arange(len(rms)), sr=sr)
+    finestra = int(0.05 * sr)
+    n_f = len(y) // finestra
+    rms = np.sqrt((y[: n_f * finestra].reshape(n_f, finestra) ** 2).mean(axis=1))
     soglia = rms.max() * 10 ** (-40 / 20)
     sopra = np.where(rms > soglia)[0]
-    inizio_vero = float(t_rms[sopra[0]]) if len(sopra) else 0.0
-    fine_vera = float(t_rms[sopra[-1]]) if len(sopra) else float(len(y) / sr)
+    inizio_vero = float(sopra[0] * finestra / sr) if len(sopra) else 0.0
+    fine_vera = float((sopra[-1] + 1) * finestra / sr) if len(sopra) else float(len(y) / sr)
     confronto = "NON CONFERMATO"
     if bpm_artlist:
         for mult in (1, 2, 0.5):
@@ -73,14 +166,15 @@ def analizza_brano(file: str, bpm_artlist: float | None = None) -> dict:
                 break
     return {
         "esito": "ok" if "coincide" in confronto else "bpm_non_confermato",
-        "bpm_misurato": bpm_misurato, "bpm_librosa": round(tempo, 2), "bpm_artlist": bpm_artlist, "confronto_bpm": confronto,
+        "bpm_misurato": bpm_misurato, "bpm_artlist": bpm_artlist, "confronto_bpm": confronto,
         "durata_battito_s": round(periodo, 4),
         "irregolarita_battiti": round(regolarita, 3),
         "battiti_s": [round(float(x), 3) for x in battiti],
         "battute_s": [round(float(battiti[i]), 3) for i in g["indici_battute"]],
         "frasi_s": [round(float(battiti[i]), 3) for i in g["indici_frasi"]],
         "inizio_vero_s": round(inizio_vero, 3), "fine_vera_s": round(fine_vera, 3),
-        "nota": "Se il BPM non è confermato non tagliare finché non è chiaro (protocollo).",
+        "nota": "Se il BPM non è confermato non tagliare finché non è chiaro (protocollo). "
+                "Battute e frasi sono una stima: controllarle all'ascolto sul primo taglio.",
     }
 
 

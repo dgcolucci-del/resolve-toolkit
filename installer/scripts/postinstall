@@ -31,18 +31,20 @@ LAVORO="$(come_utente mktemp -d /tmp/resolvetoolkit.XXXXXX)"
 come_utente cp -R "$SORGENTE/." "$LAVORO/" || fallito "copia del sorgente"
 
 come_utente "$PY" -m venv --clear "$DEST/venv" || fallito "creazione ambiente Python"
-come_utente "$DEST/venv/bin/python" -m pip install -q --upgrade pip || echo "AVVISO: aggiornamento pip non riuscito"
-come_utente "$DEST/venv/bin/python" -m pip install -q "$LAVORO" || fallito "installazione del toolkit"
+PIP=("$DEST/venv/bin/python" -m pip install -q)
+come_utente "${PIP[@]}" --upgrade pip || echo "AVVISO: aggiornamento pip non riuscito"
+# Solo pacchetti già pronti (--only-binary): niente compilazioni da sorgente, che sui Mac Intel
+# con Python 3.14 falliscono (20 nov 2026: cryptography provava a compilarsi con Rust/OpenSSL)
+come_utente "${PIP[@]}" --only-binary=:all: "mcp>=1.2" "numpy>=1.24" "pillow>=10" || fallito "librerie di base"
+come_utente "${PIP[@]}" --no-deps "$LAVORO" || fallito "installazione del toolkit"
 echo "OK: nucleo installato"
 
-# Parti pesanti: se non vanno, il toolkit funziona lo stesso e lo dice
-for extra in musica visione; do
-  if come_utente "$DEST/venv/bin/python" -m pip install -q "$LAVORO[$extra]"; then
-    echo "OK: $extra"
-  else
-    echo "AVVISO: $extra non installato (i comandi relativi risponderanno che manca)"
-  fi
-done
+# Visione (visi e scritte): se non va, il toolkit funziona lo stesso e lo dice
+if come_utente "${PIP[@]}" --only-binary=:all: "opencv-python-headless>=4.8" "pyobjc-framework-Vision>=10" "pyobjc-framework-Quartz>=10"; then
+  echo "OK: visione"
+else
+  echo "AVVISO: visione non installata (mappa_zone e controllo_grafiche risponderanno che manca)"
+fi
 come_utente rm -rf "$LAVORO"
 
 # Collegamento a Claude Desktop, con copia di sicurezza della configurazione
