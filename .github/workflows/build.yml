@@ -33,7 +33,10 @@ jobs:
           git clone --depth 1 https://github.com/mackyle/xar /tmp/xar
           cd /tmp/xar/xar
           sed -i 's/OpenSSL_add_all_ciphers/OPENSSL_init_crypto/' configure.ac
-          ./autogen.sh --noconfigure && ./configure -q && make -j4
+          sed -i '1i #include <stdlib.h>' lib/linuxattr.c
+          ./autogen.sh --noconfigure
+          CFLAGS="-O2 -Wno-error=implicit-function-declaration -Wno-error=incompatible-pointer-types" ./configure -q
+          make -j4
       - name: Compila il .pkg
         run: installer/costruisci_pkg.sh /tmp/xar/xar/src/xar /tmp/bomutils/build/bin/mkbom
       - uses: actions/upload-artifact@v4
