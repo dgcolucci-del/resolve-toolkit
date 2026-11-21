@@ -138,3 +138,24 @@ def test_tagli_tengono_la_coda_delle_parole():
     assert len(seg) == 2
     assert seg[0][0] == 0.44 and seg[0][1] >= 1.40   # coda tenuta (la vecchia regola tagliava a 1,25)
     assert seg[1][0] == 1.94 and seg[1][1] <= 2.75   # pausa tolta
+
+
+def test_analizza_parlato_bin_intero(ambiente, tmp_path, monkeypatch):
+    """Un solo comando: tagli di ogni clip del bin + wav unico con la mappa per una sola trascrizione."""
+    import json, subprocess
+    from resolve_toolkit import audio, montaggio
+    r, t = ambiente()
+    f = tmp_path / "C7001.mp4"
+    subprocess.run([audio._ffmpeg(), "-v", "error", "-f", "lavfi", "-i", "sine=f=300:d=1",
+                    "-f", "lavfi", "-i", "anullsrc=r=48000:cl=mono:d=1", "-filter_complex",
+                    "[0][1]concat=n=2:v=0:a=1,volume=0.5", str(f)], check=True)
+    r.p.radice.sotto[0].clip[0].props["File Path"] = str(f)
+    out = montaggio.analizza_parlato("B-ROLL", str(tmp_path / "wav"), trascrivi=True, attesa_s=0)
+    assert out["esito"] == "in_corso"  # nel finto non c'è trascrizione
+    r.p.radice.sotto[0].clip[0].props["Transcription"] = "Simel ti aspetta"
+    out = montaggio.analizza_parlato("B-ROLL", str(tmp_path / "wav"))
+    assert out["esito"] == "ok" and out["clip"][0]["testo"] == "Simel ti aspetta"
+    c = out["clip"][0]
+    assert c["clip"] == "C7001.MP4" and len(c["segmenti_frame"]) == 1
+    assert out["mappa"][0]["inizio_s"] == 0 and abs(out["mappa"][0]["durata_s"] - 2.0) < 0.05
+    assert json.load(open(out["wav_unico"].replace(".wav", "_mappa.json")))[0]["clip"] == "C7001.MP4"

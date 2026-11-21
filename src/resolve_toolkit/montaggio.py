@@ -102,6 +102,91 @@ def proposta_tagli(file_audio: str, soglia_db: float | None = None, durata_min_s
                     "stessa frase NON scegliere: timeline_alternative."}
 
 
+def _testo_trascrizione(c) -> str | None:
+    if hasattr(c, "GetTranscription"):
+        try:
+            t = c.GetTranscription()
+            if isinstance(t, dict):
+                if t.get("text"):
+                    return t["text"]
+                seg = t.get("segments") or []
+                if seg:
+                    return " ".join(x.get("text", "").strip() for x in seg)
+            elif isinstance(t, str) and t:
+                return t
+        except Exception:
+            pass
+    v = c.GetClipProperty("Transcription")
+    return v or None
+
+
+def analizza_parlato(cartella_media_pool: str, cartella_wav: str = "", trascrivi: bool = True,
+                     attesa_s: int = 50) -> dict:
+    """UN comando per tutto il girato di un bin: tagli calibrati di ogni clip (secondi e frame) e testo
+    dalla trascrizione AI di Resolve (21 nov 2026: tutto il bin in meno di 45 s, e ha sentito anche
+    "per info www.simelgroup.it" che whisper aveva perso). I tempi delle parole di Resolve NON servono per
+    tagliare (sbagliano di 5-20 frame): i tagli vengono dall'audio. Se la trascrizione non è pronta entro
+    attesa_s risponde "in_corso": richiamare. cartella_wav (facoltativa) salva un wav unico per altri usi."""
+    import numpy as np
+    radice = progetto().GetMediaPool().GetRootFolder()
+
+    def trova(folder, nome):
+        if folder.GetName() == nome:
+            return folder
+        for sub in folder.GetSubFolderList() or []:
+            f = trova(sub, nome)
+            if f:
+                return f
+        return None
+    bin_ = trova(radice, cartella_media_pool)
+    if bin_ is None:
+        raise ErroreToolkit(f"Bin '{cartella_media_pool}' non trovato nel media pool.")
+    clip = sorted(bin_.GetClipList() or [], key=lambda c: c.GetName())
+    testi, in_corso = {}, False
+    if trascrivi:
+        if any(_testo_trascrizione(c) is None for c in clip):
+            if hasattr(bin_, "TranscribeAudio"):
+                bin_.TranscribeAudio()
+            t0 = time.time()
+            while time.time() - t0 < attesa_s and any(_testo_trascrizione(c) is None for c in clip):
+                time.sleep(3)
+        testi = {c.GetName(): _testo_trascrizione(c) for c in clip}
+        in_corso = any(v is None for v in testi.values())
+    risultati, pezzi, mappa, cursore = [], [], [], 0.0
+    for c in clip:
+        path = c.GetClipProperty("File Path")
+        if not path or not os.path.exists(path):
+            risultati.append({"clip": c.GetName(), "errore": "file non trovato"})
+            continue
+        fps = float(c.GetClipProperty("FPS") or 25)
+        r = proposta_tagli(path, fps=fps)
+        risultati.append({"clip": c.GetName(), "durata_s": r["durata_originale_s"], "fps": fps,
+                          "testo": testi.get(c.GetName()),
+                          "segmenti_frame": r["segmenti_frame"], "segmenti_s": r["segmenti_s"]})
+        if cartella_wav:
+            g = subprocess.run([audio._ffmpeg(), "-v", "error", "-i", path, "-vn", "-ac", "1", "-ar", "16000",
+                                "-f", "s16le", "-"], capture_output=True, timeout=60).stdout
+            a = np.frombuffer(g, np.int16)
+            mappa.append({"clip": c.GetName(), "inizio_s": round(cursore, 3), "durata_s": round(len(a) / 16000, 3)})
+            pezzi += [a, np.zeros(16000, np.int16)]
+            cursore += len(a) / 16000 + 1.0
+    out = {"esito": "in_corso" if in_corso else "ok", "clip": risultati,
+           "prossimo_passo": ("trascrizione di Resolve ancora in corso: richiama tra 30 s" if in_corso else
+                              "ordine delle frasi; riprese doppie in timeline_alternative (sceglie Diego); "
+                              "poi monta_sequenza e fotogrammi_ai_tagli")}
+    if cartella_wav and pezzi:
+        import wave
+        os.makedirs(cartella_wav, exist_ok=True)
+        wav = os.path.join(cartella_wav, f"{cartella_media_pool}_tutte_16k.wav")
+        with wave.open(wav, "wb") as w:
+            w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000)
+            w.writeframes(np.concatenate(pezzi).tobytes())
+        with open(wav.replace(".wav", "_mappa.json"), "w") as f:
+            json.dump(mappa, f, indent=1)
+        out.update({"wav_unico": wav, "mappa": mappa})
+    return out
+
+
 def monta_sequenza(sequenza: list[dict], nome_nuova_timeline: str, cartella: str = "") -> dict:
     """Timeline NUOVA con più clip in fila: sequenza = [{"nome_clip", "segmenti_frame": [[da, a], ...]}].
     Inserimenti verificati uno per uno (video+audio)."""

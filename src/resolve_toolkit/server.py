@@ -291,6 +291,14 @@ def proposta_tagli(file_audio: str, soglia_db: float = 0, durata_min_s: float = 
 
 
 @comando
+def analizza_parlato(cartella_media_pool: str, trascrivi: bool = True, cartella_wav: str = "") -> dict:
+    """PRIMO passo del parlato, UN comando per tutto il bin: testo di ogni clip (trascrizione AI di Resolve,
+    meno di 1 minuto) + tagli calibrati con le code intere. Poi: ordine, riprese doppie a Diego,
+    monta_sequenza. Se risponde "in_corso", richiamalo."""
+    return montaggio.analizza_parlato(cartella_media_pool, cartella_wav, trascrivi)
+
+
+@comando
 def monta_sequenza(sequenza: list[dict], nome_nuova_timeline: str, cartella: str = "") -> dict:
     """Timeline NUOVA con più clip in fila: [{"nome_clip", "segmenti_frame": [[da, a], ...]}]."""
     return montaggio.monta_sequenza(sequenza, nome_nuova_timeline, cartella)
