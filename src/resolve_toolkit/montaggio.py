@@ -273,7 +273,16 @@ def _leggi_trascrizione(base):
         testo = s.get("text", "").strip()
         if testo:
             parole.append({"testo": testo, "inizio_s": s["offsets"]["from"] / 1000, "fine_s": s["offsets"]["to"] / 1000})
-    return {"esito": "ok", "parole": parole, "testo": " ".join(p["testo"] for p in parole),
+    esito, motivo = "ok", ""
+    testi = [p["testo"].lower().strip(".,!?;:") for p in parole]
+    if not testi:
+        esito, motivo = "sospetto", "nessuna parola"
+    else:
+        lettere = sum(1 for w in testi if any(c.isalpha() for c in w)) / len(testi)
+        diverse = len(set(testi)) / len(testi)
+        if lettere < 0.8 or (len(testi) > 20 and diverse < 0.3):
+            esito, motivo = "sospetto", f"parole con lettere {lettere:.0%}, parole diverse {diverse:.0%}"
+    return {"esito": esito, "motivo": motivo, "parole": parole, "testo": " ".join(p["testo"] for p in parole),
             "json": base + ".json",
             "nota": "I tempi di whisper vanno corretti sull'audio vero; il testo va fatto rileggere a Diego."}
 
@@ -321,9 +330,12 @@ def trascrivi(file_audio: str, lingua: str = "it", modello: str = "") -> dict:
     durata = os.path.getsize(wav) / 32000  # 16 kHz mono 16 bit
     log = os.path.join(tmp, "whisper.log")
     with open(log, "w") as lf:
-        proc = subprocess.Popen([cli, "-m", modello, "-f", wav, "-l", lingua, "-ml", "1", "-sow", "-ojf", "-of", base],
+        # -ng: sull'iMac (Radeon Pro 580X) whisper con Metal dava testo spazzatura (SIMEL 005, 21 nov 2026);
+        # su CPU è più lento ma corretto. NON CONFERMATO finché non si riprova sull'iMac.
+        proc = subprocess.Popen([cli, "-m", modello, "-f", wav, "-l", lingua, "-ml", "1", "-sow", "-ng",
+                                 "-ojf", "-of", base],
                                 stdout=lf, stderr=subprocess.STDOUT, start_new_session=True)
     with open(stato, "w") as f:
-        json.dump({"pid": proc.pid, "avvio": time.time(), "log": log, "stima_s": round(durata * 2.3)}, f)
-    return {"esito": "in_corso", "durata_audio_s": round(durata, 1), "stima_totale_s": round(durata * 2.3),
+        json.dump({"pid": proc.pid, "avvio": time.time(), "log": log, "stima_s": round(durata * 6)}, f)
+    return {"esito": "in_corso", "durata_audio_s": round(durata, 1), "stima_totale_s": round(durata * 6),
             "prossimo_passo": "richiama trascrivi con lo stesso file tra 30-60 s"}

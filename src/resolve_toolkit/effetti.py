@@ -77,6 +77,113 @@ def salva_comp_clip(item) -> list[str]:
     return salvate
 
 
+# ---------------------------------------------------------------- animazioni scritte nella comp
+
+def _motion_blur(tool):
+    for k, v in (("MotionBlur", 1), ("Quality", 10), ("ShutterAngle", 180)):
+        tool.SetInput(k, v)
+
+
+def chiavi_whip(da: int, a: int, direzione: str, fase: str, spostamento: float = 0.6, blur: float = 0.3):
+    """Curve del whip approvato da Diego (SIMEL 005, 21 nov 2026): uscita che accelera, entrata che frena.
+    Spostamento in frazioni di larghezza, blur direzionale come Length di Fusion."""
+    if fase not in ("uscita", "entrata"):
+        raise ErroreToolkit("fase del whip: 'uscita' o 'entrata'.")
+    segno = -1 if direzione == "sinistra" else 1
+    n = max(1, a - da)
+    xk, bk = [], []
+    for i in range(n + 1):
+        t = i / n
+        if fase == "uscita":
+            xk.append((da + i, round(0.5 + segno * spostamento * t ** 2.3, 4)))
+            bk.append((da + i, round(blur * t ** 1.9, 4)))
+        else:
+            xk.append((da + i, round(0.5 - segno * spostamento * (1 - t) ** 2.3, 4)))
+            bk.append((da + i, round(blur * (1 - t) ** 1.9, 4)))
+    return xk, bk
+
+
+def _spline(nome, chiavi):
+    k = ",\n".join(f"\t\t\t\t[{base_frame}] = {{ {v}, Flags = {{ Linear = true }} }}" for base_frame, v in chiavi)
+    return f"\t\t{nome} = BezierSpline {{\n\t\t\tKeyFrames = {{\n{k}\n\t\t\t}}\n\t\t}},\n"
+
+
+def _blocco(testo: str, inizio: str):
+    i = testo.index(inizio)
+    j = testo.index("{", i)
+    d = 0
+    for p in range(j, len(testo)):
+        if testo[p] == "{":
+            d += 1
+        elif testo[p] == "}":
+            d -= 1
+            if d == 0:
+                break
+    fine = p + 1
+    if testo[fine:fine + 1] == ",":
+        fine += 1
+    return i, fine
+
+
+def patch_testo_comp(testo: str, prefisso: str, xk, yk, blur=None, size=None) -> str:
+    """Inserisce Transform (Center animato con XYPath, Edges Mirror, motion blur) e, se serve, un
+    DirectionalBlur tra l'ultimo nodo della catena e MediaOut1. Metodo verificato in render il 21 nov 2026:
+    la BezierSpline su un ingresso Point (Center) NON anima, lascia il quadro spostato su tutta la clip."""
+    import re
+    m = re.search(r"RenderRange = \{ (-?\d+),", testo)
+    base = int(m.group(1)) if m else 0
+    n = 1
+    while f"{prefisso}{n}Transform" in testo:
+        n += 1
+    nome = f"{prefisso}{n}"
+    i, f = _blocco(testo, "MediaOut1 = Saver {")
+    sorgente = re.search(r'Input = Input \{\s*SourceOp = "([^"]+)"', testo[i:f])
+    sorgente = sorgente.group(1) if sorgente else "MediaIn1"
+    sp = lambda c: [(base + fr, v) for fr, v in c]  # noqa: E731
+    nuovi = _spline(f"{nome}X", sp(xk)) + _spline(f"{nome}Y", sp(yk))
+    nuovi += (f"\t\t{nome}Center = XYPath {{\n\t\t\tShowKeyPoints = false,\n\t\t\tDrawMode = \"ModifyOnly\",\n"
+              f"\t\t\tInputs = {{\n\t\t\t\tX = Input {{ SourceOp = \"{nome}X\", Source = \"Value\", }},\n"
+              f"\t\t\t\tY = Input {{ SourceOp = \"{nome}Y\", Source = \"Value\", }},\n\t\t\t}},\n\t\t}},\n")
+    extra = f"\t\t\t\tSize = Input {{ Value = {size}, }},\n" if size else ""
+    nuovi += (f"\t\t{nome}Transform = Transform {{\n\t\t\tInputs = {{\n"
+              f"\t\t\t\tMotionBlur = Input {{ Value = 1, }},\n\t\t\t\tQuality = Input {{ Value = 10, }},\n"
+              f"\t\t\t\tShutterAngle = Input {{ Value = 180, }},\n{extra}"
+              f"\t\t\t\tCenter = Input {{ SourceOp = \"{nome}Center\", Source = \"Value\", }},\n"
+              f"\t\t\t\tEdges = Input {{ Value = 3, }},\n"
+              f"\t\t\t\tInput = Input {{ SourceOp = \"{sorgente}\", Source = \"Output\", }},\n\t\t\t}},\n\t\t}},\n")
+    ultimo = f"{nome}Transform"
+    if blur:
+        nuovi += _spline(f"{nome}BlurLength", sp(blur))
+        nuovi += (f"\t\t{nome}Blur = DirectionalBlur {{\n\t\t\tInputs = {{\n"
+                  f"\t\t\t\tLength = Input {{ SourceOp = \"{nome}BlurLength\", Source = \"Value\", }},\n"
+                  f"\t\t\t\tInput = Input {{ SourceOp = \"{ultimo}\", Source = \"Output\", }},\n\t\t\t}},\n\t\t}},\n")
+        ultimo = f"{nome}Blur"
+    nuovi += (f"\t\tMediaOut1 = Saver {{\n\t\t\tInputs = {{\n\t\t\t\tIndex = Input {{ Value = \"0\", }},\n"
+              f"\t\t\t\tInput = Input {{ SourceOp = \"{ultimo}\", Source = \"Output\", }},\n\t\t\t}},\n\t\t}},\n")
+    # testo[:i] finisce già con l'indentazione di MediaOut1
+    return testo[:i] + nuovi.lstrip("\t") + testo[f:]
+
+
+def anima_center_nel_testo(item, prefisso, xk, yk, blur=None, size=None) -> list[str]:
+    """Export della comp 1 -> patch del testo -> import (sostituisce la comp attiva) -> salvataggio."""
+    os.makedirs(CARTELLA_COMP, exist_ok=True)
+    path = os.path.join(CARTELLA_COMP, f"{item.GetUniqueId()}_{prefisso}_{time.strftime('%H%M%S')}.comp")
+    if not item.ExportFusionComp(path, 1):
+        raise ErroreToolkit(f"Export della comp di {item.GetName()} fallito.")
+    with open(path) as fh:
+        testo = fh.read()
+    if "MediaOut1 = Saver {" not in testo:
+        raise ErroreToolkit(f"Comp di {item.GetName()} senza MediaOut1: non la tocco.")
+    with open(path, "w") as fh:
+        fh.write(patch_testo_comp(testo, prefisso, xk, yk, blur, size))
+    if not item.ImportFusionComp(path):
+        raise ErroreToolkit(f"Import della comp modificata di {item.GetName()} fallito.")
+    if (item.GetFusionCompCount() or 0) > 1:
+        raise ErroreToolkit(f"{item.GetName()} ora ha {item.GetFusionCompCount()} comp: controllare quale è attiva prima del render.")
+    registra_file(path, "comp Fusion con animazione")
+    return [path]
+
+
 # ---------------------------------------------------------------- punch-in sicuro
 
 def scala_massima(visi: list[dict], centro_px: tuple[float, float], H: int, W: int, margine_px: float) -> float:
@@ -129,21 +236,25 @@ def applica_effetto(impronta: str, indice_clip: int, effetto: str, parametri: di
         if scala > massimo:
             raise ErroreToolkit(f"Zoom {scala} taglia la testa: massimo {massimo} con questo centro.")
         tool = inserisci_prima_di_mediaout(comp, comp.AddTool("Transform"))
+        # 21 nov 2026 (SIMEL 005): Center uguale al pivot SPOSTAVA tutta l'immagine. Il Center resta al
+        # centro del quadro; lo zoom si fa attorno al Pivot.
         tool.SetInput("Pivot", {1: centro[0] / W, 2: 1 - centro[1] / H})
-        tool.SetInput("Center", {1: centro[0] / W, 2: 1 - centro[1] / H})
+        tool.SetInput("Center", {1: 0.5, 2: 0.5})
+        _motion_blur(tool)
         chiave(tool, "Size", [(da, 1.0), (a, scala)], base)
         dettaglio = {"scala": scala, "scala_massima": massimo}
     elif effetto == "shake":
         amp = float(parametri.get("ampiezza_px", 12))
-        tool = inserisci_prima_di_mediaout(comp, comp.AddTool("Transform"))
-        tool.SetInput("Size", float(parametri.get("scala_copertura", 1.05)))  # niente bordi neri
-        punti = []
+        xk, yk = [], []
         for k, fr in enumerate(range(da, a + 1, max(1, int(parametri.get("passo", 2))))):
             ang = k * 2.399
-            punti.append((fr, {1: 0.5 + amp * math.cos(ang) / W, 2: 0.5 + amp * math.sin(ang * 1.3) / H}))
-        punti.append((a, {1: 0.5, 2: 0.5}))
-        chiave(tool, "Center", punti, base)
-        dettaglio = {"ampiezza_px": amp}
+            xk.append((fr, 0.5 + amp * math.cos(ang) / W))
+            yk.append((fr, 0.5 + amp * math.sin(ang * 1.3) / H))
+        xk.append((a, 0.5)); yk.append((a, 0.5))
+        salvate = anima_center_nel_testo(item, "Shake", xk, yk, size=float(parametri.get("scala_copertura", 1.05)))
+        return {"esito": "ok", "clip": item.GetName(), "effetto": effetto, "dettaglio": {"ampiezza_px": amp},
+                "frame_comp_base": base, "comp_salvate": salvate,
+                "prossimo_passo": "render_di_prova sul tratto + verifica_render_prova + guardare i frame"}
     elif effetto == "flash":
         tool = inserisci_prima_di_mediaout(comp, comp.AddTool("BrightnessContrast"))
         picco = float(parametri.get("gain", 3.0))
@@ -152,12 +263,14 @@ def applica_effetto(impronta: str, indice_clip: int, effetto: str, parametri: di
         dettaglio = {"gain_picco": picco}
     elif effetto == "whip":
         direzione = parametri.get("direzione", "sinistra")
-        segno = -1 if direzione == "sinistra" else 1
-        blur = inserisci_prima_di_mediaout(comp, comp.AddTool("DirectionalBlur"))
-        chiave(blur, "Length", [(da, 0.0), ((da + a) // 2, float(parametri.get("blur", 0.15))), (a, 0.0)], base)
-        tr = inserisci_prima_di_mediaout(comp, comp.AddTool("Transform"))
-        chiave(tr, "Center", [(da, {1: 0.5, 2: 0.5}), (a, {1: 0.5 + segno * float(parametri.get("spostamento", 0.3)), 2: 0.5})], base)
-        dettaglio = {"direzione": direzione}
+        fase = parametri.get("fase", "uscita")
+        xk, bk = chiavi_whip(da, a, direzione, fase, float(parametri.get("spostamento", 0.6)),
+                             float(parametri.get("blur", 0.3)))
+        salvate = anima_center_nel_testo(item, "Whip", xk, [(da, 0.5)], blur=bk)
+        return {"esito": "ok", "clip": item.GetName(), "effetto": effetto,
+                "dettaglio": {"direzione": direzione, "fase": fase, "frame": [da, a]},
+                "frame_comp_base": base, "comp_salvate": salvate,
+                "prossimo_passo": "render_di_prova sul tratto + verifica_render_prova + guardare i frame"}
     elif effetto == "blur":
         tool = inserisci_prima_di_mediaout(comp, comp.AddTool("Blur"))
         chiave(tool, "XBlurSize", [(da, float(parametri.get("da_valore", 0))), (a, float(parametri.get("a_valore", 20)))], base)
@@ -197,8 +310,10 @@ def transizione(impronta: str, indice_taglio: int, tipo: str, durata_frame: int 
         raise ErroreToolkit("Tra le due clip c'è un buco o una sovrapposizione: sistemare il montaggio prima.")
     mezzo = max(1, durata_frame // 2)
     combinazioni = {
-        "whip": [("whip", {"direzione": parametri.get("direzione", "sinistra")}),
-                 ("whip", {"direzione": parametri.get("direzione", "sinistra")})],
+        "whip": [("whip", {"direzione": parametri.get("direzione", "sinistra"), "fase": "uscita",
+                           "spostamento": parametri.get("spostamento", 0.6), "blur": parametri.get("blur", 0.3)}),
+                 ("whip", {"direzione": parametri.get("direzione", "sinistra"), "fase": "entrata",
+                           "spostamento": parametri.get("spostamento", 0.6), "blur": parametri.get("blur", 0.3)})],
         "flash": [("flash", {"gain": parametri.get("gain", 3.0)}), ("flash", {"gain": parametri.get("gain", 3.0)})],
         "zoom": [("punch_in", {"scala": parametri.get("scala", 1.3)}), ("blur", {"da_valore": 15, "a_valore": 0})],
         "blur": [("blur", {"da_valore": 0, "a_valore": 20}), ("blur", {"da_valore": 20, "a_valore": 0})],
@@ -206,7 +321,10 @@ def transizione(impronta: str, indice_taglio: int, tipo: str, durata_frame: int 
     if tipo not in combinazioni:
         raise ErroreToolkit(f"Transizione '{tipo}' non prevista: {sorted(combinazioni)}. Le transizioni native di Resolve si mettono a mano.")
     (eff_a, par_a), (eff_b, par_b) = combinazioni[tipo]
-    par_a = {**par_a, "da": a_item.GetDuration() - mezzo, "a": a_item.GetDuration() - 1 if a_item.GetDuration() > mezzo else a_item.GetDuration()}
+    # ultimi `mezzo` frame della clip in uscita (ultimo frame = durata-1), primi `mezzo` di quella in entrata
+    if a_item.GetDuration() <= mezzo + 1 or b_item.GetDuration() <= mezzo + 1:
+        raise ErroreToolkit(f"Clip troppo corte per una transizione di {durata_frame} frame.")
+    par_a = {**par_a, "da": a_item.GetDuration() - 1 - mezzo, "a": a_item.GetDuration() - 1}
     par_b = {**par_b, "da": 0, "a": mezzo}
     r1 = applica_effetto(impronta, indice_taglio, eff_a, par_a, traccia, parametri.get("visi_a"), nome_timeline)
     from .stato import fotografia

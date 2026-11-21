@@ -113,10 +113,23 @@ def leggi_pcm(path: str, sr: int = 48000):
     return np.frombuffer(r.stdout, dtype=np.float32), sr
 
 
-def livelli_nei_punti(path: str, tempi_s: list[float], finestra_s: float = 0.2) -> dict:
-    """Picco e RMS (dBFS) attorno ai colpi: per confrontare SFX e musica sui colpi, non solo il LUFS."""
+def impronta_audio(x) -> str:
+    import hashlib
+    return hashlib.sha1(x.tobytes()).hexdigest()[:12]
+
+
+def livelli_nei_punti(path: str, tempi_s: list[float], finestra_s: float = 0.2, confronto: str = "") -> dict:
+    """Picco e RMS (dBFS) attorno ai colpi: per confrontare SFX e musica sui colpi, non solo il LUFS.
+    21 nov 2026 (SIMEL 005): due render "diversi" davano numeri identici perché l'audio ERA identico
+    (il mute delle tracce via API non era stato applicato). Ora ogni misura riporta l'impronta dell'audio e,
+    con `confronto`, la differenza col secondo file: se l'impronta è uguale lo dice invece di misurare."""
     import numpy as np
     x, sr = leggi_pcm(path)
+    if confronto:
+        y, _ = leggi_pcm(confronto)
+        if impronta_audio(x) == impronta_audio(y):
+            raise ErroreToolkit(f"{os.path.basename(path)} e {os.path.basename(confronto)} hanno lo stesso audio "
+                                "(impronta identica): il mute/le modifiche non sono finite nel render.")
     out = []
     for t in tempi_s:
         a, b = max(0, int((t - finestra_s / 2) * sr)), int((t + finestra_s / 2) * sr)
@@ -127,8 +140,14 @@ def livelli_nei_punti(path: str, tempi_s: list[float], finestra_s: float = 0.2) 
         picco = float(np.abs(seg).max())
         rms = float(np.sqrt(np.mean(seg ** 2)))
         db = lambda v: round(20 * np.log10(v), 1) if v > 0 else None  # noqa: E731
-        out.append({"tempo_s": t, "picco_dbfs": db(picco), "rms_dbfs": db(rms)})
-    return {"file": path, "punti": out}
+        voce = {"tempo_s": t, "picco_dbfs": db(picco), "rms_dbfs": db(rms)}
+        if confronto:
+            seg2 = y[a:b]
+            if len(seg2):
+                diff = seg - seg2[:len(seg)] if len(seg2) >= len(seg) else seg[:len(seg2)] - seg2
+                voce["differenza_rms_dbfs"] = db(float(np.sqrt(np.mean(diff ** 2))))
+        out.append(voce)
+    return {"file": path, "impronta_audio": impronta_audio(x), "confronto": confronto or None, "punti": out}
 
 
 def verifica_render_prova(path: str, tempi_s: list[float] | None = None) -> dict:

@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 import time
 
-from . import calibrazione
+from . import audio, calibrazione
 from .connessione import ErroreToolkit, progetto, resolve, trova_timeline
 from .stato import confronta, fotografia, verifica_lucchetto
 
@@ -453,6 +453,15 @@ def stato_render(job_id: str, tentativi: int | None = None) -> dict:
     if st.get("JobStatus") != "Complete" or not candidati:
         raise ErroreToolkit(f"Render non completato: stato {st}, file trovati {candidati}.")
     file = os.path.join(cartella, sorted(candidati, key=lambda f: os.path.getmtime(os.path.join(cartella, f)))[-1])
+    if not info.get("solo_audio"):
+        # 21 nov 2026: un render "Complete" uscito SOLO AUDIO (Export Video rimasto spento nel Deliver)
+        try:
+            fmt = audio.formato(file)
+        except Exception:  # noqa: BLE001
+            fmt = {}
+        if not fmt.get("codec_video"):
+            raise ErroreToolkit(f"Render finito ma {os.path.basename(file)} NON ha la traccia video: nel Deliver "
+                                "'Export Video' è rimasto spento. Spuntarlo (pagina Deliver) e rifare il render.")
     out = {"esito": "ok", "file": file, "byte": os.path.getsize(file), "stato": st,
            "nota": "solo audio in mov/lpcm" if info.get("solo_audio") else "",
            "prossimo_passo": "controllo_consegna sul file (numeri veri, non le impostazioni)"}

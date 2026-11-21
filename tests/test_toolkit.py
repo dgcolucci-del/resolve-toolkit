@@ -121,3 +121,11 @@ def test_ffmpeg_reale_su_file_generato(tmp_path):
     assert l["lufs_integrati"] is not None and l["true_peak_dbtp"] < 0
     s = audio.trova_silenzi(str(f))
     assert s["numero"] == 1 and abs(s["silenzi"][0]["inizio_s"] - 2.0) < 0.05
+
+
+@pytest.mark.senza_video
+def test_render_uscito_solo_audio_viene_fermato(ambiente, tmp_path, monkeypatch):
+    r, t = ambiente()
+    monkeypatch.setattr(operazioni.audio, "formato", lambda path: {"codec_video": None, "codec_audio": "aac"})
+    with pytest.raises(ErroreToolkit, match="NON ha la traccia video"):
+        operazioni.render_sicuro(str(tmp_path / "out"), "REEL 016", "Diego: esporta")

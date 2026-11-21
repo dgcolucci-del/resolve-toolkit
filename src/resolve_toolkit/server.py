@@ -349,9 +349,10 @@ def piano_raffica(griglia: dict, da_s: float, a_s: float, clip: list[dict], batt
 
 
 @comando
-def livelli_nei_punti(file: str, tempi_s: list[float], finestra_s: float = 0.2) -> dict:
-    """Picco e RMS attorno ai colpi (SFX contro musica)."""
-    return audio.livelli_nei_punti(file, tempi_s, finestra_s)
+def livelli_nei_punti(file: str, tempi_s: list[float], finestra_s: float = 0.2, confronto: str = "") -> dict:
+    """Picco e RMS attorno ai colpi (SFX contro musica), con l'impronta dell'audio.
+    confronto = secondo file (es. render con una traccia muta): differenza punto per punto, errore se identico."""
+    return audio.livelli_nei_punti(file, tempi_s, finestra_s, confronto)
 
 
 @comando

@@ -279,3 +279,55 @@ def test_cestino_solo_file_del_toolkit(ambiente):
         lavoro.sposta_nel_cestino(["/x"], "")
     with pytest.raises(ErroreToolkit, match="non li ha creati"):
         lavoro.sposta_nel_cestino(["/Volumes/Tokiro 01/girato.mov"], "Diego: cancella")
+
+
+def test_whip_curve_e_comp_testo():
+    xk, bk = effetti.chiavi_whip(50, 54, "sinistra", "uscita")
+    assert xk[0] == (50, 0.5) and xk[-1][1] == pytest.approx(-0.1) and bk[0][1] == 0 and bk[-1][1] == pytest.approx(0.3)
+    xk, bk = effetti.chiavi_whip(0, 4, "sinistra", "entrata")
+    assert xk[0][1] == pytest.approx(1.1) and xk[-1] == (4, 0.5) and bk[-1][1] == 0
+    from finto_resolve import COMP_MINIMA
+    out = effetti.patch_testo_comp(COMP_MINIMA, "Whip", xk, [(0, 0.5)], blur=bk)
+    # Center animato con XYPath, non BezierSpline sul Point; catena MediaIn -> Transform -> Blur -> MediaOut
+    assert "Whip1Center = XYPath" in out and 'SourceOp = "Whip1Center"' in out
+    assert 'Input = Input { SourceOp = "MediaIn1"' in out and 'SourceOp = "Whip1Blur", Source = "Output"' in out
+    assert out.count("MediaOut1 = Saver") == 1 and "Edges = Input { Value = 3, }" in out
+    # secondo whip sulla stessa clip: nomi nuovi, si aggancia al precedente
+    out2 = effetti.patch_testo_comp(out, "Whip", xk, [(0, 0.5)], blur=bk)
+    assert "Whip2Transform" in out2 and out2.count("MediaOut1 = Saver") == 1
+    assert 'Input = Input { SourceOp = "Whip1Blur", Source = "Output", }' in out2
+
+
+def test_punch_in_non_sposta_il_quadro(ambiente):
+    r, t = ambiente
+    visi = [{"x": 440, "y": 300, "w": 200, "h": 260, "tipo": "viso"}]
+    imp = fotografia()["impronta"]
+    effetti.applica_effetto(imp, 1, "punch_in", {"scala": 1.15, "da": 0, "a": 20, "centro_px": [400, 700]}, visi=visi)
+    item = t.GetItemListInTrack("video", 1)[0]
+    comp = item.comps[-1]
+    tr = [s for s in comp.strumenti.values() if getattr(s, "tipo", "") == "Transform"][-1]
+    assert tr.ingressi["Center"] == {1: 0.5, 2: 0.5} and tr.ingressi["MotionBlur"] == 1
+
+
+def test_livelli_confronto_audio_identico(tmp_path):
+    import wave, numpy as np
+    from resolve_toolkit import audio
+    def scrivi(nome, gain):
+        x = (np.sin(np.arange(48000) / 48000 * 2 * np.pi * 440) * 0.3 * gain * 32767).astype(np.int16)
+        w = wave.open(str(tmp_path / nome), "wb"); w.setnchannels(1); w.setsampwidth(2); w.setframerate(48000)
+        w.writeframes(x.tobytes()); w.close()
+        return str(tmp_path / nome)
+    a, b, c = scrivi("a.wav", 1), scrivi("b.wav", 1), scrivi("c.wav", 0.5)
+    with pytest.raises(ErroreToolkit, match="stesso audio"):
+        audio.livelli_nei_punti(a, [0.5], confronto=b)
+    out = audio.livelli_nei_punti(a, [0.5], confronto=c)
+    assert out["impronta_audio"] and out["punti"][0]["differenza_rms_dbfs"] is not None
+
+
+def test_trascrizione_spazzatura_segnalata(tmp_path):
+    import json
+    from resolve_toolkit import montaggio
+    base = str(tmp_path / "x.trascrizione")
+    json.dump({"transcription": [{"text": "[_BEG_]" if i % 2 else "...", "offsets": {"from": i * 100, "to": i * 100 + 90}}
+                                 for i in range(30)]}, open(base + ".json", "w"))
+    assert montaggio._leggi_trascrizione(base)["esito"] == "sospetto"

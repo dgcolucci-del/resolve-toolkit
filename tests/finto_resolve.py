@@ -7,6 +7,30 @@ import itertools
 _ids = itertools.count(1)
 
 
+COMP_MINIMA = """Composition {
+	RenderRange = { 0, 54 },
+	Tools = {
+		MediaIn1 = Loader {
+			Inputs = {
+				GlobalIn = Input { Value = -185, },
+			},
+		},
+		MediaOut1 = Saver {
+			Inputs = {
+				Index = Input { Value = "0", },
+				Input = Input {
+					SourceOp = "MediaIn1",
+					Source = "Output",
+				}
+			},
+		}
+	},
+	Frames = {
+	},
+}
+"""
+
+
 class FintoMPI:
     def __init__(self, nome, path="/finto/", fps="25", res="2160x3840", gamma="S-Log3"):
         self.nome = nome
@@ -91,7 +115,7 @@ class FintoItem:
     def AssignToColorGroup(self, g): self.gruppo = g; return True
     def SmartReframe(self): return True
     def ExportFusionComp(self, path, i):
-        open(path, "w").write("comp"); return True
+        open(path, "w").write(COMP_MINIMA); return True
     def ImportFusionComp(self, path):
         self.import_fatti += 1; return True
 

@@ -27,6 +27,14 @@ Collegamento tra Claude e DaVinci Resolve Studio, fatto per Diego Colucci. Le op
 | Export | `render_sicuro` (solo con le parole di Diego; formato/codec/risoluzione, es. MP4 4K 2160x3840), `stato_render` |
 | Lavoro | `elenca_file_creati`, `sposta_nel_cestino`, `importa_asset`, `salva_progetto`, `scrivi_passaggio`, `leggi_passaggio`, `controlla_novita`, `registra_stile` |
 
+## Novità 0.2.6 (21 nov 2026, bug trovati su SIMEL 005)
+
+- `applica_effetto` punch_in: il Center restava uguale al pivot e spostava tutta l'immagine. Ora il Center sta al centro, lo zoom si fa attorno al Pivot, con motion blur (qualità 10, otturatore 180°).
+- `applica_effetto` whip/shake e `transizione` whip: la curva sul Center (un punto) non si animava e lasciava il quadro spostato per tutta la clip. Ora il movimento è scritto nella comp con un XYPath, come nel whip approvato da Diego: uscita che accelera negli ultimi frame, entrata che frena nei primi, bordi a specchio, blur direzionale e motion blur. `durata_frame` = frame totali, metà per lato (8 = 4+4).
+- `trascrivi`: whisper gira su CPU (`-ng`), perché con Metal sulla Radeon dell'iMac dava testo spazzatura (NON CONFERMATO finché non si riprova). Una trascrizione senza parole vere risponde "sospetto".
+- `livelli_nei_punti`: riporta l'impronta dell'audio; con `confronto` misura la differenza col secondo file e si ferma se i due audio sono identici (succedeva quando il mute via API non era stato applicato).
+- `render_sicuro` / `render_di_prova`: se il file finito non ha la traccia video, errore chiaro invece di "ok".
+
 ## Novità 0.2.5 (21 nov 2026)
 
 - `analizza_parlato`: UN comando per tutto il bin del girato. Dà il testo di ogni clip (trascrizione AI di Resolve: 15 clip in meno di 45 s, contro circa 4 minuti di whisper nel cloud) e i tagli calibrati con le code intere. Flusso del parlato: `analizza_parlato` → ordine e riprese doppie a Diego → `monta_sequenza` → `fotogrammi_ai_tagli`. Niente seconde trascrizioni di controllo.
