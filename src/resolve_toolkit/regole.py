@@ -21,7 +21,14 @@ PREDEFINITE = {
     # Musica (protocollo §4)
     "musica": {"scarto_max_battiti": 0.05, "battute_per_frase": 8, "battiti_per_battuta": 4},
     # Silenzi (17 nov 2026, reel Glow: "odia i silenzi a prescindere")
-    "silenzi": {"soglia_db": -30.0, "durata_min_s": 0.15, "margine_s": 0.05},
+    "silenzi": {"soglia_db": -30.0, "durata_min_s": 0.15, "margine_s": 0.05,
+                # 21 nov 2026, SIMEL 005: Diego ha allungato quasi tutte le code (+2/+20 frame, "luce",
+                # "di sì" troncati). Taglio calibrato sulle sue correzioni (scarto medio 1,7 frame):
+                "pausa_min_s": 0.25,          # pause più corte restano dentro la frase
+                "pre_s": 0.06,                # attacco: 60 ms prima della voce
+                "coda_sopra_fondo_db": 18.0,  # fine parola = livello sotto (fondo stanza + 18 dB)...
+                "coda_tenuta_s": 0.08,        # ...per almeno 80 ms (coda e decadimento interi)
+                "coda_extra_s": 0.0},
     # Sottotitoli (preferenze: interlinea stretta 18 nov, stessa altezza 9 nov, mai sopra visi/loghi)
     "sottotitoli": {"interlinea_max": 1.0, "stessa_altezza": True, "margine_viso_px": 30},
     # Punch-in (17 nov 2026, SIMEL 004): margine sopra la testa

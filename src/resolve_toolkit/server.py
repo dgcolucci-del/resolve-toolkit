@@ -284,9 +284,16 @@ def verifica_render_prova(file: str, tempi_s: list[float] | None = None) -> dict
 # ================================================================ parlato e musica
 
 @comando
-def proposta_tagli(file_audio: str, soglia_db: float = 0, durata_min_s: float = 0) -> dict:
-    """Tratti parlati da tenere, misurati sull'audio vero (tutte le pause tolte). Da mostrare a Diego."""
-    return montaggio.proposta_tagli(file_audio, soglia_db or None, durata_min_s or None)
+def proposta_tagli(file_audio: str, soglia_db: float = 0, durata_min_s: float = 0, fps: float = 25.0) -> dict:
+    """Tratti parlati da tenere, misurati sull'audio vero: pause tolte, code delle parole INTERE
+    (taglio calibrato sulle correzioni di Diego, 21 nov 2026). Accetta anche mp4/mov. Dà secondi e frame."""
+    return montaggio.proposta_tagli(file_audio, soglia_db or None, durata_min_s or None, fps)
+
+
+@comando
+def monta_sequenza(sequenza: list[dict], nome_nuova_timeline: str, cartella: str = "") -> dict:
+    """Timeline NUOVA con più clip in fila: [{"nome_clip", "segmenti_frame": [[da, a], ...]}]."""
+    return montaggio.monta_sequenza(sequenza, nome_nuova_timeline, cartella)
 
 
 @comando

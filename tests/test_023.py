@@ -124,3 +124,17 @@ def test_importa_asset_dalla_cartella_progetto(ambiente, monkeypatch, tmp_path):
     assert lavoro.importa_asset([str(f)])["esito"] == "ok"
     with pytest.raises(ErroreToolkit, match="Fuori"):
         lavoro.importa_asset(["/Users/mac/Desktop/x.mov"])
+
+
+def test_tagli_tengono_la_coda_delle_parole():
+    """21 nov 2026: le code sotto -30 dB vanno tenute fino al fondo stanza (+18 dB), le pause tolte."""
+    import numpy as np
+    from resolve_toolkit import montaggio
+    db = np.full(300, -70.0)          # 3 s di fondo stanza a -70 dB
+    db[50:120] = -20                  # parola 1: 0,50-1,20 s
+    db[120:150] = np.linspace(-35, -60, 30)  # coda che decade sotto -30 dB
+    db[200:260] = -20                 # parola 2 dopo una pausa vera
+    seg = montaggio.segmenti_calibrati(db, 3.0)
+    assert len(seg) == 2
+    assert seg[0][0] == 0.44 and seg[0][1] >= 1.40   # coda tenuta (la vecchia regola tagliava a 1,25)
+    assert seg[1][0] == 1.94 and seg[1][1] <= 2.75   # pausa tolta

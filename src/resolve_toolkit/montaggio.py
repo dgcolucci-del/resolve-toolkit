@@ -32,15 +32,99 @@ def segmenti_parlato(silenzi: list[dict], durata_s: float, margine_s: float | No
     return segmenti
 
 
-def proposta_tagli(file_audio: str, soglia_db: float | None = None, durata_min_s: float | None = None) -> dict:
-    r = regole()["silenzi"]
-    sil = audio.trova_silenzi(file_audio, soglia_db or r["soglia_db"], durata_min_s or r["durata_min_s"])
-    durata = audio.formato(file_audio)["durata_s"]
-    seg = segmenti_parlato(sil["silenzi"], durata)
+def inviluppo_db(file_audio: str):
+    """Livello in dB ogni 10 ms (mono 16 kHz), da qualsiasi file con audio (wav, mov, mp4)."""
+    import numpy as np
+    r = subprocess.run([audio._ffmpeg(), "-v", "error", "-i", file_audio, "-vn", "-ac", "1", "-ar", "16000",
+                        "-f", "s16le", "-"], capture_output=True, timeout=60)
+    if r.returncode != 0 or not r.stdout:
+        raise ErroreToolkit(f"Non riesco a leggere l'audio di {file_audio}.")
+    a = np.frombuffer(r.stdout, np.int16).astype(np.float64) / 32768
+    n = len(a) // 160
+    return 20 * np.log10(np.sqrt((a[:n * 160].reshape(n, 160) ** 2).mean(axis=1)) + 1e-9), len(a) / 16000
+
+
+def segmenti_calibrati(db, durata_s: float, r: dict | None = None) -> list[list[float]]:
+    """Tratti di parlato con attacco e CODA intera (taglio calibrato sulle correzioni di Diego, 21 nov 2026)."""
+    import numpy as np
+    r = r or regole()["silenzi"]
+    soglia, unisci = r["soglia_db"], r.get("pausa_min_s", 0.25)
+    fondo = float(np.percentile(db, 10))
+    sopra = np.where(db > soglia)[0]
+    if not len(sopra):
+        return []
+    grezzi, ini, prec = [], sopra[0], sopra[0]
+    for i in sopra[1:]:
+        if i - prec > 15:
+            grezzi.append([ini, prec + 1]); ini = i
+        prec = i
+    grezzi.append([ini, prec + 1])
+    grezzi = [g for g in grezzi if g[1] - g[0] >= 5]
+    if not grezzi:
+        return []
+    uniti = [grezzi[0]]
+    for a, b in grezzi[1:]:
+        if (a - uniti[-1][1]) / 100 < unisci:
+            uniti[-1][1] = b
+        else:
+            uniti.append([a, b])
+    tenuta = int(round(r.get("coda_tenuta_s", 0.08) * 100))
+    limite = fondo + r.get("coda_sopra_fondo_db", 18.0)
+    pre = int(round(r.get("pre_s", 0.06) * 100))
+    extra = int(round(r.get("coda_extra_s", 0.0) * 100))
+    out = []
+    for k, (a, b) in enumerate(uniti):
+        prossimo = uniti[k + 1][0] if k + 1 < len(uniti) else len(db)
+        j = b
+        while j < prossimo - tenuta and not (db[j:j + tenuta] < limite).all():
+            j += 1
+        j = min(j + extra, prossimo - 4 if k + 1 < len(uniti) else len(db))
+        inizio = max(0, a - pre, out[-1][1] if out else 0)
+        out.append([inizio, j])
+    return [[round(a / 100, 3), round(min(b / 100, durata_s), 3)] for a, b in out]
+
+
+def proposta_tagli(file_audio: str, soglia_db: float | None = None, durata_min_s: float | None = None,
+                   fps: float = 25.0) -> dict:
+    """Tratti da tenere misurati sull'audio vero, con le code delle parole intere (21 nov 2026).
+    Accetta anche i file video (mp4/mov). Restituisce secondi e frame sorgente (fine esclusa)."""
+    import math
+    r = dict(regole()["silenzi"])
+    if soglia_db:
+        r["soglia_db"] = soglia_db
+    db, durata = inviluppo_db(file_audio)
+    seg = segmenti_calibrati(db, durata, r)
+    frame = [[math.floor(a * fps), math.ceil(b * fps)] for a, b in seg]
     tenuto = sum(b - a for a, b in seg)
-    return {"esito": "ok", "segmenti_s": seg, "pause_trovate": sil["numero"], "durata_originale_s": round(durata, 2),
-            "durata_montata_s": round(tenuto, 2),
-            "nota": "PROPOSTA: mostrarla a Diego prima di costruire la timeline."}
+    return {"esito": "ok", "segmenti_s": seg, "segmenti_frame": frame, "fps": fps,
+            "durata_originale_s": round(durata, 2), "durata_montata_s": round(tenuto, 2),
+            "nota": "Code delle parole intere (calibrate sulle correzioni di Diego). Con più riprese della "
+                    "stessa frase NON scegliere: timeline_alternative."}
+
+
+def monta_sequenza(sequenza: list[dict], nome_nuova_timeline: str, cartella: str = "") -> dict:
+    """Timeline NUOVA con più clip in fila: sequenza = [{"nome_clip", "segmenti_frame": [[da, a], ...]}].
+    Inserimenti verificati uno per uno (video+audio)."""
+    p = progetto()
+    nomi = {p.GetTimelineByIndex(i).GetName() for i in range(1, p.GetTimelineCount() + 1)}
+    if nome_nuova_timeline in nomi:
+        raise ErroreToolkit(f"Esiste già una timeline '{nome_nuova_timeline}'.")
+    t = p.GetMediaPool().CreateEmptyTimeline(nome_nuova_timeline)
+    if t is None:
+        raise ErroreToolkit("Resolve non ha creato la timeline.")
+    p.SetCurrentTimeline(t)
+    posizione, inseriti = 0, []
+    for voce in sequenza:
+        for da, fino in voce["segmenti_frame"]:
+            if fino <= da:
+                continue
+            imp = fotografia(nome_nuova_timeline)["impronta"]
+            r = inserisci_clip(imp, voce["nome_clip"], int(da), int(fino), 1, posizione, "entrambi",
+                               voce.get("cartella") or cartella or None, nome_nuova_timeline)
+            inseriti.append({"clip": voce["nome_clip"], "sorgente": [da, fino], "posizione": posizione})
+            posizione += r["durata"]
+    return {"esito": "ok", "timeline": nome_nuova_timeline, "segmenti": len(inseriti), "durata_frame": posizione,
+            "inseriti": inseriti, "prossimo_passo": "fotogrammi_ai_tagli, poi far vedere a Diego"}
 
 
 def monta_parlato(nome_clip: str, segmenti_s: list[list[float]], nome_nuova_timeline: str,

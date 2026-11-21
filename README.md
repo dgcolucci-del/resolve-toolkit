@@ -12,12 +12,12 @@ Collegamento tra Claude e DaVinci Resolve Studio, fatto per Diego Colucci. Le op
 - **Autocalibrazione e sondaggio:** convenzioni dell'API misurate al primo uso, funzioni disponibili controllate su ogni Mac.
 - **Registro e passaggi:** ogni comando finisce in `~/Library/Logs/ResolveToolkit/`. A fine fase `scrivi_passaggio` lascia lo stato per la chat successiva.
 
-## Comandi (52)
+## Comandi (53)
 
 | Area | Comandi |
 |---|---|
 | Avvio | `avvio_reel`, `sondaggio_api`, `regole_diego`, `elenca_timeline`, `stato_timeline` |
-| Montaggio | `inserisci_clip`, `sostituisci_clip`, `backup_timeline`, `proposta_tagli`, `monta_parlato`, `timeline_alternative`, `trascrivi`, `fotogrammi_ai_tagli` |
+| Montaggio | `inserisci_clip`, `sostituisci_clip`, `backup_timeline`, `proposta_tagli`, `monta_parlato`, `monta_sequenza`, `timeline_alternative`, `trascrivi`, `fotogrammi_ai_tagli` |
 | Color | `stato_color`, `uniformita_color`, `registra_controllo_scope`, `segna_modifica_color`, `color_completa`, `assegna_gruppo_colore` |
 | Grafiche | `mappa_zone`, `piano_sottotitoli`, `crea_titolo_fusion`, `controllo_grafiche`, `verifica_font` |
 | Effetti | `applica_effetto` (punch_in, shake, flash, whip, blur, glow, speed_ramp), `transizione` (whip, flash, zoom, blur), `salva_fusion`, `clip_orizzontali`, `smart_reframe` |
@@ -26,6 +26,11 @@ Collegamento tra Claude e DaVinci Resolve Studio, fatto per Diego Colucci. Le op
 | Verifica | `render_di_prova`, `verifica_render_prova`, `controllo_consegna` |
 | Export | `render_sicuro` (solo con le parole di Diego; formato/codec/risoluzione, es. MP4 4K 2160x3840), `stato_render` |
 | Lavoro | `elenca_file_creati`, `sposta_nel_cestino`, `importa_asset`, `salva_progetto`, `scrivi_passaggio`, `leggi_passaggio`, `controlla_novita`, `registra_stile` |
+
+## Novità 0.2.4 (21 nov 2026, SIMEL 005)
+
+- `proposta_tagli`: code delle parole intere. La fine di ogni tratto arriva dove il livello scende al fondo stanza (+18 dB) per 80 ms, non al primo calo sotto -30 dB che troncava le parole ("luce", "di sì"). Calibrato sulle correzioni di Diego al montaggio SIMEL 005: scarto medio 1,7 frame. Legge anche mp4/mov e restituisce i frame.
+- `monta_sequenza`: timeline nuova con più clip in fila, ogni inserimento verificato.
 
 ## Novità 0.2.3 (20 nov 2026, dopo REEL 003 Piero Angela)
 
