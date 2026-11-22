@@ -191,7 +191,13 @@ def _risolvi_clip(t, riferimento: str) -> list:
             return per_etichetta
     per_nome = [it for _, _, it in tutte if it.GetName() == rif]
     if not per_nome:
-        raise ErroreToolkit(f"Clip '{riferimento}' non trovata (né come id, né come etichetta V1_003_nome, né come nome).")
+        # 22 nov 2026: "foglia" per Green_Leaf_... Si accetta una parte del nome solo se è UNA clip sola.
+        parziali = [it for _, _, it in tutte if rif.lower() in (it.GetName() or "").lower()]
+        if len({it.GetName() for it in parziali}) == 1:
+            return parziali
+        nomi = sorted({etichetta(t_, i_, it) for t_, i_, it in tutte})
+        raise ErroreToolkit(f"Clip '{riferimento}' non trovata (né come id, né come etichetta, né come nome o parte "
+                            f"del nome). Clip in timeline: {nomi}")
     return per_nome
 
 
@@ -203,7 +209,7 @@ def _registro():
 
 def registra_controllo_scope(nome_clip: str, parade: str, waveform: str, vectorscope: str,
                              esito: str, pelle: str = "", rumore: str = "", screenshot: str = "",
-                             nome_timeline: str | None = None) -> dict:
+                             nome_timeline: str | None = None, eccezione: str = "") -> dict:
     """Da chiamare DOPO aver guardato gli scope di Resolve sul PHL per quella clip."""
     if esito not in ("ok", "da_correggere"):
         raise ErroreToolkit("esito deve essere 'ok' o 'da_correggere'.")
@@ -217,6 +223,7 @@ def registra_controllo_scope(nome_clip: str, parade: str, waveform: str, vectors
         reg[item.GetUniqueId()] = {"nome": item.GetName(), "ora": time.time(), "parade": parade,
                                    "waveform": waveform, "vectorscope": vectorscope, "pelle": pelle,
                                    "rumore": rumore, "esito": esito, "screenshot": screenshot,
+                                   "eccezione": eccezione.strip(),
                                    "impronta_grade": impronta_grade(_catena(item)), "valido": True}
     _json_scrivi(_registro(), reg)
     out = {"esito": "ok", "registrato": nome_clip, "clip_registrate": len(items)}
@@ -239,11 +246,20 @@ def segna_modifica_color(nome_clip: str, nome_timeline: str | None = None) -> di
     return {"esito": "ok", "controlli_annullati": toccate}
 
 
-def color_completa(nome_timeline: str | None = None) -> dict:
+SOGLIA_BRUCIATI = 0.5  # % di pixel con un canale a 254-255 su un frame visibile della clip
+
+
+def color_completa(nome_timeline: str | None = None, misura: bool = True) -> dict:
+    """Cancello finale della color. Oltre al controllo scope registrato su ogni clip, MISURA un frame per clip
+    (22 nov 2026, Esosomi: "completa" con provetta, viso C5516 e cellule sovraesposti, l'ha visto Diego).
+    Una clip con bruciati o pelle fuori dal resto del montato blocca, salvo eccezione scritta nel controllo
+    scope (es. "fondo crema della grafica originale")."""
     t = trova_timeline(nome_timeline)
     reg = _json_leggi(_registro(), {})
     mancanti, da_correggere, ok = [], [], []
     for _, _, it in _clip_video(t):
+        if _e_overlay(it):
+            continue
         r = reg.get(it.GetUniqueId())
         if not r or not r["valido"]:
             mancanti.append(it.GetName())
@@ -253,10 +269,33 @@ def color_completa(nome_timeline: str | None = None) -> dict:
             da_correggere.append(it.GetName())
         else:
             ok.append(it.GetName())
-    chiusa = not mancanti and not da_correggere
+    misurate, segnalate = {}, []
+    if misura and not mancanti and not da_correggere:
+        u = uniformita(nome_timeline)
+        motivi = {x["clip"]: list(x["motivi"]) for x in u["fuori_media"]}
+        for nome, m in u["misure"].items():
+            if m["percento_bruciati"] > SOGLIA_BRUCIATI:
+                motivi.setdefault(nome, [])
+                testo = f"{m['percento_bruciati']}% pixel bruciati"
+                if not any("bruciati" in x for x in motivi[nome]):
+                    motivi[nome].append(testo)
+        for nome, mm in motivi.items():
+            gravi = [x for x in mm if "bruciati" in x or "pelle" in x]
+            if not gravi:
+                continue
+            r = reg.get(u["id"].get(nome), {})
+            if r.get("eccezione"):
+                misurate[nome] = {"motivi": gravi, "eccezione": r["eccezione"]}
+            else:
+                segnalate.append({"clip": nome, "motivi": gravi})
+    chiusa = not mancanti and not da_correggere and not segnalate
     return {"esito": "completa" if chiusa else "aperta", "senza_controllo_scope": mancanti,
             "da_correggere": da_correggere, "controllate_ok": ok,
-            "prossimo_passo": "render di prova da far vedere a Diego" if chiusa else "guardare gli scope sulle clip elencate"}
+            "segnalate_dalle_misure": segnalate, "eccezioni_accettate": misurate,
+            "prossimo_passo": ("render di prova, misura dei bruciati su TUTTI i frame, poi farlo vedere a Diego"
+                               if chiusa else
+                               "correggere nella pagina Color le clip segnalate guardando gli scope (o scrivere "
+                               "l'eccezione motivata in registra_controllo_scope), poi rifare color_completa")}
 
 
 # ---------------------------------------------------------------- gruppi colore

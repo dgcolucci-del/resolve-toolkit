@@ -174,10 +174,13 @@ def uniformita_color(nome_timeline: str = "") -> dict:
 
 @comando
 def registra_controllo_scope(nome_clip: str, parade: str, waveform: str, vectorscope: str, esito: str,
-                             pelle: str = "", rumore: str = "", screenshot: str = "", nome_timeline: str = "") -> dict:
-    """Dopo aver GUARDATO gli scope di Resolve sul PHL per quella clip: scrivi i valori letti. esito: ok | da_correggere."""
+                             pelle: str = "", rumore: str = "", screenshot: str = "", nome_timeline: str = "",
+                             eccezione: str = "") -> dict:
+    """Dopo aver GUARDATO gli scope di Resolve sul PHL per quella clip: scrivi i valori letti. esito: ok | da_correggere.
+    nome_clip: id, etichetta V1_003_nome, nome o parte unica del nome. eccezione: solo se la clip ha bruciati
+    o pelle diversa VOLUTI (es. fondo crema di una grafica originale), con il motivo: color_completa la accetta."""
     return color.registra_controllo_scope(nome_clip, parade, waveform, vectorscope, esito, pelle, rumore,
-                                          screenshot, nome_timeline or None)
+                                          screenshot, nome_timeline or None, eccezione)
 
 
 @comando
@@ -188,7 +191,8 @@ def segna_modifica_color(nome_clip: str, nome_timeline: str = "") -> dict:
 
 @comando
 def color_completa(nome_timeline: str = "") -> dict:
-    """Cancello: la color è chiusa solo se ogni clip ha un controllo scope valido con esito ok."""
+    """Cancello: la color è chiusa solo se ogni clip ha un controllo scope valido con esito ok E se le misure
+    su un frame per clip non trovano bruciati (>0,5%) o pelle fuori dal resto del montato (luce o tinta)."""
     return color.color_completa(nome_timeline or None)
 
 
@@ -270,9 +274,11 @@ def smart_reframe(impronta: str, indici: list[int], traccia: int = 1, nome_timel
 
 
 @comando
-def render_di_prova(mark_in: int, mark_out: int, solo_audio: bool = False, nome_timeline: str = "") -> dict:
-    """Render di CONTROLLO di un tratto (frame relativi) nella cartella temporanea. Non è una consegna."""
-    return operazioni.render_di_prova(mark_in, mark_out, solo_audio, nome_timeline or None)
+def render_di_prova(mark_in: int, mark_out: int, solo_audio: bool = False, nome_timeline: str = "",
+                    cartella: str = "") -> dict:
+    """Render di CONTROLLO di un tratto (frame relativi) in <progetto>/_claude, dove si può aprire e misurare.
+    Non è una consegna."""
+    return operazioni.render_di_prova(mark_in, mark_out, solo_audio, nome_timeline or None, cartella)
 
 
 @comando
@@ -384,7 +390,8 @@ def sposta_nel_cestino(file: list[str], conferma_diego: str) -> dict:
 
 @comando
 def importa_asset(percorsi: list[str], cartella_media_pool: str = "") -> dict:
-    """Importa nel media pool asset scaricati da Diego, solo dall'archivio Tokiro 01/SFX."""
+    """Importa nel media pool file dall'archivio Tokiro 01/SFX o dalle cartelle dei progetti
+    (Progetti Video 2026, compresi overlay e grafiche in <progetto>/_claude)."""
     return lavoro.importa_asset(percorsi, cartella_media_pool)
 
 

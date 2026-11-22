@@ -10,6 +10,7 @@ PERCORSI_MAC = {
 }
 
 _resolve_override = None  # usato dai test per iniettare un Resolve simulato
+_connessione = None  # UNA sola connessione per processo (22 nov 2026, vedi resolve())
 
 
 class ErroreToolkit(Exception):
@@ -17,13 +18,28 @@ class ErroreToolkit(Exception):
 
 
 def imposta_resolve(oggetto) -> None:
-    global _resolve_override
+    global _resolve_override, _connessione
     _resolve_override = oggetto
+    _connessione = None
 
 
 def resolve():
+    """Connessione a Resolve, riusata finché risponde.
+
+    22 nov 2026 (reel Esosomi): ogni chiamata a scriptapp() apriva una connessione NUOVA. Gli oggetti presi
+    da connessioni diverse non si parlano: AppendToTimeline rifiutava la clip del media pool (inserisci_clip
+    "rifiutato con tutte le convenzioni") e SetCurrentTimeline ignorava la timeline (backup_timeline lasciava
+    corrente la copia). Provato sul Mac: stessa connessione = funziona, connessioni diverse = rifiutato."""
+    global _connessione
     if _resolve_override is not None:
         return _resolve_override
+    if _connessione is not None:
+        try:
+            if _connessione.GetVersionString():
+                return _connessione
+        except Exception:  # noqa: BLE001 - connessione caduta: se ne apre una nuova
+            pass
+        _connessione = None
     os.environ.setdefault("RESOLVE_SCRIPT_API", os.path.dirname(PERCORSI_MAC["api"]))
     os.environ.setdefault("RESOLVE_SCRIPT_LIB", PERCORSI_MAC["lib"])
     if PERCORSI_MAC["api"] not in sys.path:
@@ -38,6 +54,7 @@ def resolve():
             "Resolve non risponde. Controlla che sia aperto e che in Preferenze > Generale "
             "'External scripting using' sia su Local."
         )
+    _connessione = r
     return r
 
 

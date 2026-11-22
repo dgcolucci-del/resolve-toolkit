@@ -331,3 +331,124 @@ def test_trascrizione_spazzatura_segnalata(tmp_path):
     json.dump({"transcription": [{"text": "[_BEG_]" if i % 2 else "...", "offsets": {"from": i * 100, "to": i * 100 + 90}}
                                  for i in range(30)]}, open(base + ".json", "w"))
     assert montaggio._leggi_trascrizione(base)["esito"] == "sospetto"
+
+
+# ---------------------------------------------------------------- correzioni 0.2.7 (reel Esosomi, 22 nov 2026)
+
+def test_connessione_unica(monkeypatch):
+    """scriptapp() a ogni chiamata dava oggetti di connessioni diverse che Resolve rifiutava."""
+    import sys, types
+    connessione.imposta_resolve(None)
+    aperte = []
+
+    class R:
+        def GetVersionString(self): return "21.2"
+    mod = types.ModuleType("DaVinciResolveScript")
+    mod.scriptapp = lambda nome: aperte.append(R()) or aperte[-1]
+    monkeypatch.setitem(sys.modules, "DaVinciResolveScript", mod)
+    a, b = connessione.resolve(), connessione.resolve()
+    assert a is b and len(aperte) == 1
+    a.GetVersionString = lambda: (_ for _ in ()).throw(RuntimeError("caduta"))
+    c = connessione.resolve()
+    assert c is not a and len(aperte) == 2
+    connessione.imposta_resolve(None)
+
+
+def test_backup_resta_sull_originale(ambiente):
+    r, t = ambiente
+    out = operazioni.backup_timeline(fotografia()["impronta"])
+    assert r.p.GetCurrentTimeline().GetName() == "REEL 016" and out["timeline_corrente_verificata"]
+
+
+def test_backup_si_ferma_se_non_torna(ambiente, monkeypatch):
+    r, t = ambiente
+    monkeypatch.setattr(r.p, "SetCurrentTimeline", lambda x: False)
+    monkeypatch.setattr(operazioni.time, "sleep", lambda s: None)
+    with pytest.raises(ErroreToolkit, match="rimasto sulla copia"):
+        operazioni.backup_timeline(fotografia()["impronta"])
+
+
+def test_inserisci_su_timeline_non_corrente(ambiente):
+    r, t = ambiente
+    altra = r.p._aggiungi(FintaTimeline("ALTRA"))
+    r.p.corrente = altra
+    imp = fotografia("REEL 016")["impronta"]
+    out = operazioni.inserisci_clip(imp, "Musica.wav", 0, 20, 2, 10, "video", None, "REEL 016")
+    assert out["esito"] == "ok" and out["inizio_relativo"] == 10
+    assert not any(altra.tracce["video"][0]) and len(t.tracce["video"]) == 2
+
+
+def test_confronto_stessa_clip_due_volte(ambiente):
+    """Overlay inserito su una traccia che ha già una clip con lo stesso nome: non è 'spostata'."""
+    r, t = ambiente
+    imp = fotografia()["impronta"]
+    operazioni.inserisci_clip(imp, "Musica.wav", 0, 20, 2, 0, "video")
+    imp = fotografia()["impronta"]
+    out = operazioni.inserisci_clip(imp, "Musica.wav", 0, 20, 2, 60, "video")
+    assert out["esito"] == "ok" and not out["confronto"]["spostate"]
+
+
+def test_scope_con_parte_del_nome(ambiente):
+    r, t = ambiente
+    t.tracce["video"][0][1].nome = "Green_Leaf_With_Oil_uhd.mp4"
+    out = color.registra_controllo_scope("green_leaf", "bianchi R=G=B a 890", "picchi a 920", "pelle sulla linea", "ok")
+    assert out["clip_registrate"] == 1
+    with pytest.raises(ErroreToolkit, match="Clip in timeline"):
+        color.registra_controllo_scope("foglia", "bianchi R=G=B a 890", "picchi a 920", "pelle sulla linea", "ok")
+
+
+def _scope_ok(*nomi, **kw):
+    for n in nomi:
+        color.registra_controllo_scope(n, "bianchi R=G=B a 890", "picchi a 920, neri a 64", "pelle sulla linea", "ok", **kw)
+
+
+def test_color_completa_blocca_i_bruciati(ambiente):
+    """22 nov 2026: 'completa' con clip sovraesposte. Ora un frame per clip viene misurato."""
+    r, t = ambiente
+    bruciata = np.full((64, 36, 3), 120, np.uint8)
+    bruciata[:20] = 255  # ~31% di pixel a 255
+    r.p.immagini = {(90050, 90100): bruciata}
+    _scope_ok("C6594.MP4", "C6595.MP4")
+    out = color.color_completa()
+    assert out["esito"] == "aperta"
+    assert any("C6595" in s["clip"] and "bruciati" in " ".join(s["motivi"]) for s in out["segnalate_dalle_misure"])
+    _scope_ok("C6595.MP4", eccezione="fondo bianco voluto della grafica")
+    out = color.color_completa()
+    assert out["esito"] == "completa" and out["eccezioni_accettate"]
+
+
+def test_color_completa_blocca_pelle_piu_chiara(ambiente):
+    r, t = ambiente
+    t.tracce["video"][0].append(FintoItem("C6596.MP4", 90100, 90150, 0, t.tracce["video"][0][0].mpi))
+
+    def viso(y):  # frame quasi tutto pelle con luminanza diversa
+        img = np.zeros((64, 36, 3), np.uint8)
+        img[:] = [min(255, y + 40), y, max(0, y - 15)]
+        return img
+    r.p.immagini = {(90000, 90050): viso(110), (90050, 90100): viso(112), (90100, 90150): viso(160)}
+    _scope_ok("C6594.MP4", "C6595.MP4", "C6596.MP4")
+    out = color.color_completa()
+    assert out["esito"] == "aperta"
+    assert any("C6596" in s["clip"] and "pelle più chiara" in " ".join(s["motivi"]) for s in out["segnalate_dalle_misure"])
+
+
+def test_render_di_prova_nella_cartella_progetto(ambiente, tmp_path):
+    r, t = ambiente
+    progetto_dir = tmp_path / "05. ESOSOMI"
+    (progetto_dir / "video").mkdir(parents=True)
+    t.tracce["video"][0][0].mpi = FintoMPI("C5493.MP4", path=str(progetto_dir / "video") + "/")
+    assert operazioni.cartella_claude_progetto() == str(progetto_dir / "_claude")
+    out = operazioni.render_di_prova(0, 50)
+    assert out["file"].startswith(str(progetto_dir / "_claude"))
+
+
+def test_attacchi_corretti_dopo_le_pause(monkeypatch):
+    sr = 16000
+    x = np.zeros(sr * 3, np.float32)
+    x[int(0.2 * sr):int(1.0 * sr)] = 0.3 * np.sin(np.arange(int(0.8 * sr)) * 0.2)   # prima parola
+    x[int(1.6 * sr):int(2.5 * sr)] = 0.3 * np.sin(np.arange(int(0.9 * sr)) * 0.2)   # attacco vero a 1,6 s
+    x += 0.0005 * np.random.default_rng(0).standard_normal(len(x)).astype(np.float32)
+    monkeypatch.setattr(montaggio.audio, "leggi_pcm", lambda path, sr=16000: x)
+    parole = [{"testo": "uno", "inizio_s": 0.2, "fine_s": 1.0}, {"testo": "due", "inizio_s": 1.9, "fine_s": 2.5}]
+    assert montaggio.correggi_attacchi(parole, "finto.wav") == 1
+    assert abs(parole[1]["inizio_s"] - 1.58) <= 0.03 and parole[1]["inizio_whisper_s"] == 1.9

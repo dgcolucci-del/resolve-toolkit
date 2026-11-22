@@ -90,7 +90,16 @@ def inserisci_clip(impronta: str, nome_clip: str, inizio_sorgente: int, fine_sor
         raise ErroreToolkit("posizione è relativa all'inizio della timeline: non può essere negativa.")
     prima = verifica_lucchetto(impronta, nome_timeline)
     t = trova_timeline(nome_timeline)
-    mp = progetto().GetMediaPool()
+    # AppendToTimeline scrive SEMPRE nella timeline corrente: con nome_timeline diverso dalla corrente la clip
+    # finirebbe altrove. Si rende corrente la timeline giusta e si verifica (22 nov 2026).
+    p_ = progetto()
+    cor = p_.GetCurrentTimeline()
+    if cor is None or cor.GetName() != t.GetName():
+        p_.SetCurrentTimeline(t)
+        cor = p_.GetCurrentTimeline()
+        if cor is None or cor.GetName() != t.GetName():
+            raise ErroreToolkit(f"Non riesco a rendere corrente '{t.GetName()}': niente inserito.")
+    mp = p_.GetMediaPool()
     mpi = _clip_media_pool(nome_clip, cartella)
     try:
         lunghezza = int(str(mpi.GetClipProperty("Frames") or "0").strip() or 0)
@@ -245,11 +254,23 @@ def backup_timeline(impronta: str, nome_timeline: str | None = None) -> dict:
     while f"BACKUP {n:02d} - {t.GetName()}" in esistenti:
         n += 1
     nome = f"BACKUP {n:02d} - {t.GetName()}"
+    originale = t.GetName()
     copia = t.DuplicateTimeline(nome)
     if copia is None:
         raise ErroreToolkit("Duplicazione rifiutata da Resolve.")
-    progetto().SetCurrentTimeline(t)  # resto sull'originale
-    return {"esito": "ok", "backup": nome, "timeline_di_lavoro": t.GetName()}
+    # DuplicateTimeline sposta la timeline corrente sulla copia senza dirlo (22 nov 2026, Esosomi: la traccia
+    # nuova è finita nel BACKUP). Si torna sull'originale e si VERIFICA, altrimenti ci si ferma.
+    p = progetto()
+    for _ in range(3):
+        p.SetCurrentTimeline(trova_timeline(originale))
+        corrente = p.GetCurrentTimeline()
+        if corrente is not None and corrente.GetName() == originale:
+            break
+        time.sleep(0.5)
+    else:
+        raise ErroreToolkit(f"Backup '{nome}' creato, ma Resolve è rimasto sulla copia: torna su '{originale}' "
+                            "prima di qualsiasi modifica (set_current) e avvisa Diego.")
+    return {"esito": "ok", "backup": nome, "timeline_di_lavoro": originale, "timeline_corrente_verificata": True}
 
 
 # ---------------------------------------------------------------- Fusion
@@ -340,12 +361,36 @@ def render_sicuro(cartella: str, nome_file: str, conferma_diego: str, preset: st
 CARTELLA_PROVE = os.path.expanduser("~/Library/Application Support/ResolveToolkit/temp/render_prova")
 
 
-def render_di_prova(mark_in: int, mark_out: int, solo_audio: bool = False, nome_timeline: str | None = None) -> dict:
-    """Render di CONTROLLO (non una consegna): tratto in 1080p nella cartella temporanea del toolkit."""
+CARTELLE_MEDIA = {"video", "girato", "raw", "clip", "b-roll", "broll", "audio", "footage"}
+
+
+def cartella_claude_progetto(nome_timeline: str | None = None) -> str:
+    """<cartella del progetto>/_claude, ricavata dal primo file video della timeline
+    (es. .../05. ESOSOMI/video/C5493.MP4 -> .../05. ESOSOMI/_claude). Vuota se non si ricava."""
+    t = trova_timeline(nome_timeline)
+    for tr in range(1, (t.GetTrackCount("video") or 0) + 1):
+        for it in t.GetItemListInTrack("video", tr) or []:
+            mpi = it.GetMediaPoolItem()
+            f = mpi.GetClipProperty("File Path") if mpi else ""
+            if f and os.path.isabs(f):
+                cartella = os.path.dirname(f)
+                if os.path.basename(cartella).lower() in CARTELLE_MEDIA:
+                    cartella = os.path.dirname(cartella)
+                return os.path.join(cartella, "_claude")
+    return ""
+
+
+def render_di_prova(mark_in: int, mark_out: int, solo_audio: bool = False, nome_timeline: str | None = None,
+                    cartella: str = "") -> dict:
+    """Render di CONTROLLO (non una consegna), 1080p.
+    22 nov 2026: nella cartella temporanea del toolkit (Libreria) il file non si poteva aprire per controllarlo
+    e il render andava rifatto. Ora va in <progetto>/_claude (o nella cartella indicata)."""
     if mark_out <= mark_in:
         raise ErroreToolkit("mark_out deve essere dopo mark_in.")
+    cartella = cartella or cartella_claude_progetto(nome_timeline) or CARTELLA_PROVE
+    os.makedirs(cartella, exist_ok=True)
     nome = f"prova_{time.strftime('%Y%m%d-%H%M%S')}"
-    r = _render(CARTELLA_PROVE, nome, "H.264 Master", 40000, mark_in, mark_out, solo_audio, nome_timeline,
+    r = _render(cartella, nome, "H.264 Master", 40000, mark_in, mark_out, solo_audio, nome_timeline,
                 larghezza=1080, altezza=1920)
     if r.get("file"):
         from .lavoro import registra_file

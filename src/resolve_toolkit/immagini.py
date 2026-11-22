@@ -55,7 +55,10 @@ def analizza_colore(rgb: np.ndarray) -> dict:
     if pelle_mask.mean() > 0.01:
         angolo = math.degrees(math.atan2(float(cr[pelle_mask].mean() - 128), float(cb[pelle_mask].mean() - 128)))
         pelle = {"percentuale_frame": round(float(pelle_mask.mean() * 100), 1), "angolo": round(angolo, 1),
-                 "scarto_da_linea_pelle": round(angolo - 123.0, 1)}
+                 "scarto_da_linea_pelle": round(angolo - 123.0, 1),
+                 # 22 nov 2026, Esosomi: visi sovraesposti (Y 162-181) con luma media del frame normale
+                 "luma": round(float(y[pelle_mask].mean()), 1),
+                 "luma_p99": round(float(np.percentile(y[pelle_mask], 99)), 1)}
     return {
         "luma_media": round(float(y.mean()), 1),
         "bianchi_rgb": [round(float(v), 1) for v in bianchi],
@@ -69,12 +72,17 @@ def analizza_colore(rgb: np.ndarray) -> dict:
 
 def fuori_media(misure: dict[str, dict], soglie: dict | None = None) -> list[dict]:
     """Clip che si staccano dalla mediana del montato (per l'uniformità)."""
-    s = {"luma": 20.0, "dominante": 12.0, "pelle_gradi": 8.0, "bruciati": 1.0, **(soglie or {})}
+    s = {"luma": 20.0, "dominante": 12.0, "pelle_gradi": 8.0, "bruciati": 1.0, "pelle_luma": 15.0,
+         **(soglie or {})}
     if not misure:
         return []
     luma = np.median([m["luma_media"] for m in misure.values()])
     angoli = [m["pelle"]["angolo"] for m in misure.values() if m["pelle"]]
     angolo_med = np.median(angoli) if angoli else None
+    # pelle vera solo dove è una parte consistente del frame (parlato): sotto il 10% sono oggetti color pelle
+    lume = [m["pelle"]["luma"] for m in misure.values()
+            if m["pelle"] and m["pelle"].get("luma") is not None and m["pelle"]["percentuale_frame"] >= 10]
+    luma_pelle_med = np.median(lume) if lume else None
     out = []
     for nome, m in misure.items():
         motivi = []
@@ -86,6 +94,11 @@ def fuori_media(misure: dict[str, dict], soglie: dict | None = None) -> list[dic
             motivi.append(f"{m['percento_bruciati']}% pixel bruciati")
         if m["pelle"] and angolo_med is not None and abs(m["pelle"]["angolo"] - angolo_med) > s["pelle_gradi"]:
             motivi.append(f"pelle a {m['pelle']['angolo']}° contro {angolo_med:.1f}°")
+        if (m["pelle"] and luma_pelle_med is not None and m["pelle"].get("luma") is not None
+                and m["pelle"]["percentuale_frame"] >= 10
+                and abs(m["pelle"]["luma"] - luma_pelle_med) > s["pelle_luma"]):
+            verso = "più chiara" if m["pelle"]["luma"] > luma_pelle_med else "più scura"
+            motivi.append(f"pelle {verso}: Y {m['pelle']['luma']} contro {luma_pelle_med:.1f}")
         if motivi:
             out.append({"clip": nome, "motivi": motivi})
     return out

@@ -142,7 +142,10 @@ class FintaTimeline:
                     if i in t: t.remove(i)
         return True
     def DuplicateTimeline(self, nome):
-        return self.progetto._aggiungi(FintaTimeline(nome, self.inizio, self.fps))
+        # trappola vera (22 nov 2026): la copia diventa la timeline corrente senza dirlo
+        copia = self.progetto._aggiungi(FintaTimeline(nome, self.inizio, self.fps))
+        self.progetto.corrente = copia
+        return copia
     def SetCurrentTimecode(self, tc):
         self.testina = tc; return True
     def SetVoiceIsolationState(self, tr, s):
@@ -214,7 +217,21 @@ class FintoProgetto:
     def GetTimelineByIndex(self, i): return self.timeline[i - 1]
     def GetMediaPool(self): return self.mp
     def ExportCurrentFrameAsStill(self, path):
-        open(path, "w").write("png"); return True
+        # PNG vero: le misure di uniformità/color_completa lo leggono. Immagine per clip via self.immagini
+        import numpy as np
+        from PIL import Image
+        t = self.corrente
+        frame = None
+        if t is not None and t.testina:
+            hh, mm, ss, ff = (int(x) for x in t.testina.split(":"))
+            frame = ((hh * 60 + mm) * 60 + ss) * int(t.fps) + ff
+        img = None
+        for (a, b), im in getattr(self, "immagini", {}).items():
+            if frame is not None and a <= frame < b:
+                img = im
+        if img is None:
+            img = np.full((64, 36, 3), 110, np.uint8)
+        Image.fromarray(np.asarray(img, np.uint8)).save(path, format="PNG"); return True
     def DeleteAllRenderJobs(self): self.jobs.clear(); return True
     def LoadRenderPreset(self, p): return p == "H.264 Master"
     def SetCurrentRenderFormatAndCodec(self, f, c): return True

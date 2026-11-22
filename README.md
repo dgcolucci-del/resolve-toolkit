@@ -27,6 +27,18 @@ Collegamento tra Claude e DaVinci Resolve Studio, fatto per Diego Colucci. Le op
 | Export | `render_sicuro` (solo con le parole di Diego; formato/codec/risoluzione, es. MP4 4K 2160x3840), `stato_render` |
 | Lavoro | `elenca_file_creati`, `sposta_nel_cestino`, `importa_asset`, `salva_progetto`, `scrivi_passaggio`, `leggi_passaggio`, `controlla_novita`, `registra_stile` |
 
+## Novità 0.2.7 (22 nov 2026, bug trovati sul reel Esosomi di Anna Lanzo)
+
+- **Connessione unica a Resolve** (causa di più errori): ogni comando apriva una connessione nuova a ogni chiamata e gli oggetti presi da connessioni diverse non si parlano. Per questo `inserisci_clip` rispondeva "rifiutato con tutte le convenzioni" e `backup_timeline` lasciava corrente la copia. Provato sul Mac: con la stessa connessione l'inserimento riesce, con due connessioni no. Ora la connessione si apre una volta e si riusa finché risponde.
+- `backup_timeline`: Resolve sposta la timeline corrente sulla copia appena creata. Ora si torna sull'originale e si verifica il nome; se non torna, il comando si ferma invece di dire "ok".
+- `inserisci_clip`: con `nome_timeline` diverso dalla corrente, la rende corrente prima di inserire (AppendToTimeline scrive sempre nella corrente). Il confronto prima/dopo usa l'id della clip: una clip uguale già sulla stessa traccia non risulta più "spostata".
+- `color_completa`: oltre ai controlli scope registrati, misura un frame per clip e blocca se trova più dello 0,5% di pixel bruciati o una pelle più chiara/scura o di tinta diversa dal resto del montato. Il 22 nov aveva detto "completa" con provetta, cellule e visi di C5516/C5520 sovraesposti, e se n'è accorto Diego. Un'eccezione voluta (es. fondo crema di una grafica) si scrive in `registra_controllo_scope` con `eccezione`.
+- `uniformita_color`: misura anche la luminanza della pelle (Y media e 99° percentile) e segnala le clip con la pelle più chiara o più scura di 15 punti rispetto alla mediana.
+- `registra_controllo_scope`: accetta anche una parte unica del nome della clip; se non la trova, elenca le clip della timeline.
+- `render_di_prova`: il file va in `<progetto>/_claude` (o in `cartella`), dove si può aprire e misurare. Prima finiva nella Libreria del toolkit e il render andava rifatto.
+- `trascrivi`: dopo ogni pausa corregge sull'audio vero l'attacco della prima parola (whisper era in ritardo fino a 0,3 s). Riporta quante parole ha corretto.
+- `importa_asset`: la descrizione ora dice che importa anche dalle cartelle dei progetti (overlay in `_claude`), come già faceva il codice.
+
 ## Novità 0.2.6 (21 nov 2026, bug trovati su SIMEL 005)
 
 - `applica_effetto` punch_in: il Center restava uguale al pivot e spostava tutta l'immagine. Ora il Center sta al centro, lo zoom si fa attorno al Pivot, con motion blur (qualità 10, otturatore 180°).

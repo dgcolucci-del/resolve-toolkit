@@ -265,7 +265,42 @@ def timeline_alternative(riprese: list[dict], nome_timeline: str, pausa_s: float
     return {"esito": "ok", "timeline": nome_timeline, "riprese": fatte, "nota": "Far scegliere a Diego."}
 
 
-def _leggi_trascrizione(base):
+def correggi_attacchi(parole: list[dict], file_audio: str, pausa_min_s: float = 0.2) -> int:
+    """whisper mette in ritardo (fino a 0,3 s) la prima parola dopo una pausa (22 nov 2026, Esosomi).
+    Dopo ogni pausa si cerca l'attacco vero sull'audio: primo punto dopo il minimo della pausa in cui il
+    livello sale di 12 dB. Si sposta solo in anticipo e al massimo di 0,4 s. Restituisce quante parole."""
+    try:
+        import numpy as np
+        x = audio.leggi_pcm(file_audio, sr=16000)
+    except Exception:  # noqa: BLE001 - senza audio leggibile si lasciano i tempi di whisper
+        return 0
+    hop = 160
+    n = len(x) // hop
+    if n < 2:
+        return 0
+    db = 20 * np.log10(np.sqrt(np.mean(np.asarray(x[: n * hop]).reshape(n, hop) ** 2, axis=1)) + 1e-6)
+    corrette = 0
+    for k in range(1, len(parole)):
+        prima, w = parole[k - 1], parole[k]
+        if w["inizio_s"] - prima["fine_s"] < pausa_min_s:
+            continue
+        a, b = int(prima["fine_s"] * 100), min(n, int(w["inizio_s"] * 100) + 25)
+        if b - a < 5:
+            continue
+        seg = db[a:b]
+        m = int(np.argmin(seg))
+        for q in range(m, len(seg)):
+            if seg[q] > seg[m] + 12:
+                attacco = (a + q) / 100 - 0.02
+                if 0.04 < w["inizio_s"] - attacco <= 0.4:
+                    w["inizio_whisper_s"] = w["inizio_s"]
+                    w["inizio_s"] = round(attacco, 2)
+                    corrette += 1
+                break
+    return corrette
+
+
+def _leggi_trascrizione(base, file_audio: str = ""):
     with open(base + ".json") as f:
         dati = json.load(f)
     parole = []
@@ -273,6 +308,7 @@ def _leggi_trascrizione(base):
         testo = s.get("text", "").strip()
         if testo:
             parole.append({"testo": testo, "inizio_s": s["offsets"]["from"] / 1000, "fine_s": s["offsets"]["to"] / 1000})
+    corrette = correggi_attacchi(parole, file_audio) if file_audio else 0
     esito, motivo = "ok", ""
     testi = [p["testo"].lower().strip(".,!?;:") for p in parole]
     if not testi:
@@ -283,8 +319,9 @@ def _leggi_trascrizione(base):
         if lettere < 0.8 or (len(testi) > 20 and diverse < 0.3):
             esito, motivo = "sospetto", f"parole con lettere {lettere:.0%}, parole diverse {diverse:.0%}"
     return {"esito": esito, "motivo": motivo, "parole": parole, "testo": " ".join(p["testo"] for p in parole),
-            "json": base + ".json",
-            "nota": "I tempi di whisper vanno corretti sull'audio vero; il testo va fatto rileggere a Diego."}
+            "json": base + ".json", "attacchi_corretti_sull_audio": corrette,
+            "nota": "Attacchi dopo le pause corretti sull'audio vero; dentro il parlato continuo restano i tempi di "
+                    "whisper (±0,1 s). Il testo va fatto rileggere a Diego."}
 
 
 def trascrivi(file_audio: str, lingua: str = "it", modello: str = "") -> dict:
@@ -296,7 +333,7 @@ def trascrivi(file_audio: str, lingua: str = "it", modello: str = "") -> dict:
     base = os.path.splitext(file_audio)[0] + ".trascrizione"
     stato = base + ".stato"
     if os.path.exists(base + ".json") and os.path.getmtime(base + ".json") >= os.path.getmtime(file_audio):
-        return _leggi_trascrizione(base)
+        return _leggi_trascrizione(base, file_audio)
     if os.path.exists(stato):
         with open(stato) as f:
             info = json.load(f)

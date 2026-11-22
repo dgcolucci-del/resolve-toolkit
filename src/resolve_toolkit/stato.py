@@ -81,13 +81,16 @@ def verifica_lucchetto(impronta_attesa: str, nome_timeline: str | None) -> dict:
 
 
 def confronta(prima: dict, dopo: dict) -> dict:
-    chiave = lambda c: (c["tipo"], c["traccia"], c["nome"], c["offset_sorgente"])  # noqa: E731
+    # Per id unico: col nome due clip uguali sulla stessa traccia (stesso SFX due volte, overlay e sua copia)
+    # si sovrascrivevano e una clip nuova risultava "spostata" (22 nov 2026). Senza id: chiave di prima.
+    def chiave(c):
+        return c.get("id") or (c["tipo"], c["traccia"], c["nome"], c["offset_sorgente"])
     a = {chiave(c): c for c in prima["clip"]}
     b = {chiave(c): c for c in dopo["clip"]}
     sparite = [a[k] for k in a if k not in b]
     nuove = [b[k] for k in b if k not in a]
     spostate = [
-        {"nome": b[k]["nome"], "traccia": f"{k[0]} {k[1]}",
+        {"nome": b[k]["nome"], "traccia": f'{b[k]["tipo"]} {b[k]["traccia"]}',
          "prima": [a[k]["inizio"], a[k]["fine"]], "dopo": [b[k]["inizio"], b[k]["fine"]]}
         for k in a if k in b and (a[k]["inizio"], a[k]["fine"]) != (b[k]["inizio"], b[k]["fine"])
     ]
